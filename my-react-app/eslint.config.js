@@ -17,5 +17,26 @@ export default defineConfig([
       globals: globals.browser,
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
+    rules: {
+      'no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrors: 'none' },
+      ],
+      // The app loads API data with mount/route effects; that pattern is intentional here.
+      'react-hooks/set-state-in-effect': 'off',
+      'react-refresh/only-export-components': ['error', { allowConstantExport: true }],
+    },
+  },
+  {
+    files: ['server.js', 'scripts/**/*.js'],
+    languageOptions: {
+      globals: globals.node,
+    },
+  },
+  {
+    files: ['src/components/ui/Toast.jsx'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
   },
 ])

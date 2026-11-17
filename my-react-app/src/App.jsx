@@ -1,46 +1,120 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
-import { useAuth } from './context/AuthContext.jsx';
-import Login from './pages/Login.jsx';
-import Layout from './components/Layout.jsx';
-import Main from './pages/Main.jsx';
-import Request from './pages/Request.jsx';
-import Order from './pages/Order.jsx';
-import Issue from './pages/Issue.jsx';
-import ReturnPage from './pages/ReturnPage.jsx';
-import RegisterFixture from './pages/RegisterFixture.jsx';
-import EditFixture from './pages/EditFixture.jsx';
-import FixtureList from './pages/FixtureList.jsx';
-import TestPrint from './pages/TestPrint.jsx';
+import { useCallback, useMemo, useState } from 'react'
+import AppShell from './components/AppShell'
+import { ToastProvider } from './components/ui/Toast'
+import { ALL_NAV_ITEMS, DEFAULT_PAGE } from './lib/navigation'
+import LoginPage from './pages/LoginPage'
+import DashboardPage from './pages/DashboardPage'
+import RequestPage from './pages/RequestPage'
+import ReturnPage from './pages/ReturnPage'
+import OrderPage from './pages/OrderPage'
+import FixtureListPage from './pages/FixtureListPage'
+import PMPage from './pages/PMPage'
+import RegisterFixturePage from './pages/RegisterFixturePage'
+import EditFixturePage from './pages/EditFixturePage'
+import HistoryPage from './pages/HistoryPage'
+import { SESSION, UI_STATE } from './lib/constants'
 
-function Protected({ children }) {
-  const { user } = useAuth();
-  if (!user) return <Navigate to="/login" replace />;
-  return children;
+function readSession() {
+  try {
+    const userId = localStorage.getItem(SESSION.userId)
+    if (!userId) return null
+    return {
+      userId,
+      name: localStorage.getItem(SESSION.user) || userId,
+      lastName: localStorage.getItem(SESSION.lastName) || '',
+      role: localStorage.getItem(SESSION.role) || '',
+      dept: localStorage.getItem(SESSION.dept) || '',
+      requestId: localStorage.getItem(SESSION.requestId) || '',
+    }
+  } catch {
+    return null
+  }
 }
-function AdminProtected({ children }) {
-  const { user } = useAuth();
-  if (!user) return <Navigate to="/login" replace />;
-  if (user.role !== 'admin') return <Navigate to="/request" replace />;
-  return children;
+
+function clearSession() {
+  try {
+    Object.values(SESSION).forEach((key) => localStorage.removeItem(key))
+  } catch {
+    /* ignore */
+  }
+}
+
+function readPage() {
+  try {
+    const stored = localStorage.getItem(UI_STATE.page)
+    if (stored && ALL_NAV_ITEMS.some((item) => item.key === stored)) return stored
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_PAGE
+}
+
+function writePage(next) {
+  try {
+    localStorage.setItem(UI_STATE.page, next)
+  } catch {
+    /* ignore */
+  }
 }
 
 export default function App() {
+  const [user, setUser] = useState(readSession)
+  const [page, setPage] = useState(readPage)
+
+  const validPage = useMemo(
+    () => (ALL_NAV_ITEMS.some((item) => item.key === page) ? page : DEFAULT_PAGE),
+    [page],
+  )
+
+  const handleLogin = useCallback((session) => {
+    setUser(session)
+    setPage(DEFAULT_PAGE)
+    writePage(DEFAULT_PAGE)
+  }, [])
+
+  const handleLogout = useCallback(() => {
+    clearSession()
+    try {
+      localStorage.removeItem(UI_STATE.page)
+    } catch {
+      /* ignore */
+    }
+    setUser(null)
+  }, [])
+
+  const navigate = useCallback((next) => {
+    setPage(next)
+    writePage(next)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [])
+
+  if (!user) {
+    return (
+      <ToastProvider>
+        <LoginPage onLogin={handleLogin} />
+      </ToastProvider>
+    )
+  }
+
+  const pages = {
+    dashboard: DashboardPage,
+    request: RequestPage,
+    return: ReturnPage,
+    order: OrderPage,
+    fixtures: FixtureListPage,
+    pm: PMPage,
+    register: RegisterFixturePage,
+    edit: EditFixturePage,
+    history: HistoryPage,
+  }
+
+  const PageComponent = pages[validPage] || DashboardPage
+
   return (
-    <Routes>
-      <Route path="/login" element={<Login />} />
-      <Route path="/" element={<Protected><Layout /></Protected>}>
-        <Route index element={<Navigate to="/main" replace />} />
-        <Route path="main" element={<AdminProtected><Main /></AdminProtected>} />
-        <Route path="request" element={<Request />} />
-        <Route path="order" element={<Order />} />
-        <Route path="issue" element={<AdminProtected><Issue /></AdminProtected>} />
-        <Route path="return" element={<AdminProtected><ReturnPage /></AdminProtected>} />
-        <Route path="register-fixture" element={<AdminProtected><RegisterFixture /></AdminProtected>} />
-        <Route path="edit" element={<AdminProtected><EditFixture /></AdminProtected>} />
-        <Route path="list" element={<AdminProtected><FixtureList /></AdminProtected>} />
-        <Route path="test-print" element={<AdminProtected><TestPrint /></AdminProtected>} />
-      </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
-  );
+    <ToastProvider>
+      <AppShell user={user} page={validPage} onNavigate={navigate} onLogout={handleLogout}>
+        <PageComponent user={user} onNavigate={navigate} />
+      </AppShell>
+    </ToastProvider>
+  )
 }

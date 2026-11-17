@@ -1,16 +1,110 @@
-# React + Vite
+# Fixture Management · FAN2 (Flow MM)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+ระบบบริหารจัดการฟิกซ์เจอร์สำหรับสายการผลิต Delta FAN2 — React + Vite + Tailwind CSS v4 + Express/Mongoose
+สร้างใหม่ตาม **Flow Fixture MM.drawio**
 
-Currently, two official plugins are available:
+## Flow (Flow Fixture MM)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```
+Register → Input Fixture Information → If Exist / Not Exist
+Request → Change Model | Breakdown
+Change Model → Line → Model A → Model B → Compare A->B → Summary Issue/Return
+  → Fixture Room Prepare Fixture → ME/TE Confirm Received → Record History → Done
+  → ME/TE Return Fixture → Fixture Confirm Returned → Record History
+Breakdown → Verify → PM & Maintenance | Issue Spare | Record Breakdown
+PM → Pre-Alert → Overdue 3 day remind (Orange) | Current reach 80% remind (Orange)
+  → Plan PM → PM On Due → PM Over Due → 4M (Over 7 Day → Management Approve +XX Days)
+  → PM & Maintenance → Verify + Record
+     OK → Reset Due → Auto Print Sticker → Record History → Done
+     NG → Need Scrape | Need PR (Red) | New One Replacement → Record History → Done
+```
 
-## React Compiler
+- **Request** — ผู้ใช้ส่งคำขอ `Change Model` หรือ `Breakdown`
+- **Orders** — Fixture Room รับคำขอ (Accept) → เตรียม/จ่ายของ (Issue) → ME/TE ยืนยันรับ (Verify → Done)
+  - Change Model จะ Compare Fixture List ของ Model A→B อัตโนมัติ แยกรายการ Issue / Return / Keep
+- **Register** — ลงทะเบียน Fixture ใหม่ ตรวจ `If Exist / Not Exist` ตาม Serial Number
+- **Return** — ME/TE คืน Fixture → Fixture Room ยืนยันรับคืนเข้า `In Stock` หรือ `Maintenance`
+- **PM** — Pre-Alert · Overdue 3 day remind · 80% Usage remind · PM On Due · PM Over Due + `Plan PM` + `4M Approve (+XX days)`
+- **Maintenance** — Verify + Record: `OK` → Reset Due + Auto Print Sticker, `NG` → Need Scrape / Need PR / New One Replacement
+- **History** — ทุก action บันทึกลง collection `history` อัตโนมัติ
+- **Users** — อนุมัติผู้ใช้ใหม่และจัดการสิทธิ์
+- **Sticker printing** — พิมพ์ QR 36 × 11 mm (Register และหลัง PM OK อัตโนมัติ)
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Data model (ตาม drawio)
 
-## Expanding the ESLint configuration
+- `users` — `{ empId, pass, name, lastname, dept{}, status{} }`
+- `fixturelist` — `{ line, model, fixtureInfo[] }`
+  - `fixtureInfo` — `{ step, process, position, fixtureDetail{} }`
+  - `fixtureDetail` — `{ sn, status, type, storage, usage{}, registered{}, fixtureBase }`
+  - `usage` — `{ current, max, exp, storage, currentModel, changeModel }`
+- `request` — `{ line, model, modelTo, type, status, desc, requestInfo, acceptInfo, issueInfo, verifyInfo }`
+- `history` — record ทุก action (`Register`, `Accept`, `Issue`, `Return`, `Verify`, `Plan PM`, `PM OK`, `PM NG`, `4M Approve`, …)
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+สถานะ Request: `Waiting → Accepted → Issued → Done`
+สถานะ Fixture: `In Stock / In Use / Maintenance / Scrape / PR`
+
+## Requirements
+
+- Node.js 20+
+- MongoDB — ฐานข้อมูลใหม่ `Fixture_Management` (เน้น underscore)
+
+ค่าเริ่มต้นเชื่อมต่อ `mongodb://10.192.8.238:27017/Fixture_Management`
+
+> ⚠️ เมื่อรันครั้งแรกกับ DB ว่าง server จะ seed ผู้ใช้ `admin` / `admin`
+> (approved + admin) ให้อัตโนมัติ — **ควรเปลี่ยนรหัสผ่านทันทีที่เข้าใช้งานจริง**
+
+## Run
+
+Development (HMR):
+
+```bash
+npm install
+npm run dev
+```
+
+- API: http://localhost:3000
+- Web: http://localhost:8000
+- ตรวจสอบการเชื่อมต่อฐานข้อมูลได้ที่ http://localhost:3000/api/health
+
+Production (เปิดเว็บที่พอร์ตเดียว):
+
+```bash
+npm run build
+npm start
+```
+
+เปิด http://localhost:3000 — `npm start` จะ serve ทั้ง API และไฟล์ frontend จาก `dist/`
+
+## Configuration
+
+ตั้งค่า environment variable ก่อนรัน `server.js`:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PORT` | `3000` | พอร์ต API |
+| `MONGO_URL` | `mongodb://10.192.8.238:27017/Fixture_Management` | ฐานข้อมูลหลัก |
+
+Frontend (ตอน build/dev):
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `VITE_API_URL` | `/api` | API base URL |
+
+## Scripts
+
+| Command | Description |
+| --- | --- |
+| `npm run dev` | รัน API + Vite พร้อมกัน |
+| `npm run server` | รันเฉพาะ API |
+| `npm run client` | รันเฉพาะ Vite ที่พอร์ต 8000 |
+| `npm run build` | สร้าง production bundle |
+| `npm start` | รัน API และ serve `dist/` |
+| `npm run lint` | ตรวจ ESLint |
+| `npm run reset-db` | ล้างข้อมูลธุรกรรม (ต้องยืนยันด้วย `-- --yes`) |
+
+## Roles
+
+- **Admin** — Register, Return, Orders (ดำเนินการ), PM, Maintenance, Users, History
+- **User** — Request, Orders (ติดตามของตัวเอง), History
+
+Role ตรวจจาก `users.status.admin` (login แล้วได้ role `admin`)
