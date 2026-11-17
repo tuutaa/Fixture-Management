@@ -53,7 +53,8 @@ function withQuery(path, params = {}) {
 
 export const api = {
   /* Auth (users { empId, pass, name, lastname, dept, status, request_id }) */
-  login: (empId, pass) => request('/login', { method: 'POST', body: { empId, pass } }),
+  login: ({ empId, pass } = {}) =>
+    request('/login', { method: 'POST', body: { empId, pass } }),
   register: (payload) => request('/register', { method: 'POST', body: payload }),
   me: (empId) => request(withQuery('/me', { empId })),
 
