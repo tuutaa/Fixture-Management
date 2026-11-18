@@ -102,6 +102,14 @@ export const api = {
   createRequest: (payload) => request('/requests', { method: 'POST', body: payload }),
   acceptRequest: (requestId, user) =>
     request(`/requests/${encodeURIComponent(requestId)}/accept`, { method: 'PUT', body: { user } }),
+  holdRequest: (requestId, user) =>
+    request(`/requests/${encodeURIComponent(requestId)}/hold`, { method: 'PUT', body: { user } }),
+  rejectRequest: (requestId, user) =>
+    request(`/requests/${encodeURIComponent(requestId)}/reject`, { method: 'PUT', body: { user } }),
+  completeRequest: (requestId, user) =>
+    request(`/requests/${encodeURIComponent(requestId)}/complete`, { method: 'PUT', body: { user } }),
+  returnRequest: (requestId, items, user) =>
+    request(`/requests/${encodeURIComponent(requestId)}/return`, { method: 'PUT', body: { items, user } }),
   issueRequest: (requestId, items, user) =>
     request(`/requests/${encodeURIComponent(requestId)}/issue`, { method: 'PUT', body: { items, user } }),
   breakdownRequest: (requestId, action, sn, user) =>

@@ -3,9 +3,9 @@ import {
   ArrowRight,
   CheckCircle2,
   ClipboardList,
+  Info,
   PackagePlus,
   Undo2,
-  Wrench,
 } from 'lucide-react'
 import api from '../lib/api'
 import {
@@ -15,28 +15,41 @@ import {
   PageHeader,
   Spinner,
 } from '../components/ui/Card'
-import { RequestStatusBadge } from '../components/ui/Badge'
 import Button from '../components/ui/Button'
 import Modal from '../components/ui/Modal'
+import { Input } from '../components/ui/Field'
+import { useToast } from '../components/ui/Toast'
 import { formatDateTime } from '../lib/format'
 
 const FILTERS = [
-  { value: '', label: 'All' },
-  { value: 'Waiting', label: 'Waiting' },
-  { value: 'Issued', label: 'Prepare fixture' },
-  { value: 'Done', label: 'Verify' },
+  { value: '', label: 'All', variant: 'slate' },
+  { value: 'Waiting', label: 'Waiting', variant: 'danger' },
+  { value: 'Progress', label: 'Progress', variant: 'primary' },
+  { value: 'Hold', label: 'Hold', variant: 'yellow' },
+  { value: 'IssueReturn', label: 'Issue / Return', variant: 'purple' },
+  { value: 'Verify', label: 'Verify', variant: 'success' },
 ]
 
-/* desc ของ Change Model ถูกสร้างเป็น "model เดิม → model ใหม่"
- * (request เก่าที่ยังไม่มี field modelTo ให้แกะจาก desc) */
-const resolveModelTo = (request) => {
-  if (request?.modelTo) return request.modelTo
+const STATUS_TONE = {
+  Waiting: 'red',
+  Progress: 'blue',
+  Hold: 'yellow',
+  IssueReturn: 'purple',
+  Verify: 'emerald',
+  Done: 'emerald',
+}
+
+const statusTone = (status) => STATUS_TONE[status] || 'blue'
+
+const resolveChangeModel = (request) => {
+  if (request?.changeModel) return request.changeModel
   const desc = String(request?.desc || '')
   const index = desc.indexOf('→')
   return index >= 0 ? desc.slice(index + 1).trim() : ''
 }
 
 const isChangeModel = (request) => /change\s*model/i.test(String(request?.type || ''))
+const isBreakdown = (request) => /breakdown/i.test(String(request?.type || ''))
 
 const personLabel = (person) => {
   if (!person) return '-'
@@ -51,13 +64,30 @@ const InfoRow = ({ label, children }) => (
   </div>
 )
 
+const STATUS_STYLE = {
+  Waiting: { bg: 'bg-red-50', badge: 'bg-red-600', label: 'WAITING' },
+  Progress: { bg: 'bg-blue-50', badge: 'bg-blue-600', label: 'PROGRESS' },
+  Hold: { bg: 'bg-yellow-50', badge: 'bg-yellow-500', label: 'HOLD' },
+  IssueReturn: { bg: 'bg-purple-50', badge: 'bg-purple-600', label: 'ISSUE/RETURN' },
+  Verify: { bg: 'bg-emerald-50', badge: 'bg-emerald-600', label: 'VERIFY' },
+  Done: { bg: 'bg-emerald-50', badge: 'bg-emerald-600', label: 'DONE' },
+}
+
+const ACTION_META = {
+  complete: { label: 'Complete', hint: 'ยืนยันการทำงานเสร็จ (Complete)' },
+  hold: { label: 'Hold', hint: 'ยืนยันการพักงาน (Hold)' },
+  reject: { label: 'Reject', hint: 'ยืนยันการปฏิเสธงาน (Reject)' },
+  issue: { label: 'Issue', hint: 'ยืนยันการเบิก Fixture (Issue)' },
+  return: { label: 'Return', hint: 'ยืนยันการคืน Fixture (Return)' },
+  verify: { label: 'Verify', hint: 'ยืนยันผลงาน (Verify)' },
+}
+
 const CHANGE_GROUPS = [
   { key: 'issue', title: 'ต้องเตรียม / เบิกใหม่', tone: 'blue', icon: PackagePlus },
   { key: 'keep', title: 'ใช้ต่อได้', tone: 'emerald', icon: CheckCircle2 },
   { key: 'return', title: 'ต้องคืน', tone: 'red', icon: Undo2 },
 ]
 
-/* หนึ่งกล่อง = หนึ่งสถานะ ลิส SN เรียงลงมาทีละบรรทัด */
 const ChangeGroup = ({ title, tone, items, icon: Icon }) => {
   const tones = {
     blue: 'border-blue-200 bg-blue-50/50 text-blue-700',
@@ -100,84 +130,301 @@ const ChangeGroup = ({ title, tone, items, icon: Icon }) => {
   )
 }
 
-export default function OrderPage() {
+const ACTION_PEOPLE = [
+  { key: 'requestInfo', label: 'ผู้ขอ (Request)', dot: 'bg-slate-400' },
+  { key: 'acceptInfo', label: 'ผู้รับงาน (Accept)', dot: 'bg-blue-500' },
+  { key: 'issueInfo', label: 'ผู้เบิก / จ่าย (Issue)', dot: 'bg-purple-500' },
+  { key: 'verifyInfo', label: 'ผู้ตรวจสอบ (Verify)', dot: 'bg-emerald-500' },
+]
+
+const CompareBlock = ({ loading, error, compare }) => {
+  if (loading) {
+    return (
+      <div className="rounded-2xl border border-slate-200 bg-white py-8">
+        <Spinner />
+      </div>
+    )
+  }
+  if (error) {
+    return (
+      <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-[11px] font-semibold text-red-700">
+        {error}
+      </div>
+    )
+  }
+  if (!compare) return null
+  return (
+    <div className="grid gap-3 sm:grid-cols-3">
+      {CHANGE_GROUPS.map((group) => (
+        <ChangeGroup
+          key={group.key}
+          title={group.title}
+          tone={group.tone}
+          icon={group.icon}
+          items={compare[group.key] || []}
+        />
+      ))}
+    </div>
+  )
+}
+
+export default function OrderPage({ user }) {
+  const toast = useToast()
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [filter, setFilter] = useState('')
-  const [active, setActive] = useState(null)
+  const [detail, setDetail] = useState(null)
+  const [acceptModal, setAcceptModal] = useState(null)
+  const [acceptPassword, setAcceptPassword] = useState('')
+  const [acceptBusy, setAcceptBusy] = useState(false)
+  const [actionModal, setActionModal] = useState(null)
+  const [actionPassword, setActionPassword] = useState('')
+  const [actionBusy, setActionBusy] = useState(false)
   const [compare, setCompare] = useState(null)
   const [compareLoading, setCompareLoading] = useState(false)
   const [compareError, setCompareError] = useState('')
+  const [busyId, setBusyId] = useState('')
 
   const load = useCallback(async () => {
     try {
       setLoading(true)
       setError('')
-      const data = await api.requests({ status: filter || undefined })
-      setRows(Array.isArray(data) ? data : [])
+      const data = await api.requests()
+      const list = Array.isArray(data) ? data : []
+      setRows(list.filter((r) => r.status !== 'Done' && r.status !== 'Rejected'))
     } catch (err) {
       setError(err.message)
     } finally {
       setLoading(false)
     }
-  }, [filter])
+  }, [])
 
   useEffect(() => {
     load()
   }, [load])
+
+  const reloadRows = useCallback(async () => {
+    try {
+      const data = await api.requests()
+      const list = Array.isArray(data) ? data : []
+      setRows(list.filter((r) => r.status !== 'Done' && r.status !== 'Rejected'))
+    } catch (err) {
+      setError(err.message)
+    }
+  }, [])
 
   const filtered = useMemo(() => {
     if (!filter) return rows
     return rows.filter((r) => r.status === filter)
   }, [rows, filter])
 
-  const openRequest = (request) => {
-    setActive(request)
-    setCompare(null)
-    setCompareError('')
+  const closeDetail = () => setDetail(null)
+
+  const openAcceptModal = (request) => {
+    setAcceptModal(request)
+    setAcceptPassword('')
+  }
+  const closeAcceptModal = () => {
+    setAcceptModal(null)
+    setAcceptPassword('')
   }
 
-  const closeRequest = () => {
-    setActive(null)
-    setCompare(null)
-    setCompareError('')
-    setCompareLoading(false)
+  const openActionModal = (request, action) => {
+    setActionModal({ request, action })
+    setActionPassword('')
+  }
+  const closeActionModal = () => {
+    setActionModal(null)
+    setActionPassword('')
   }
 
-  /* โหลดข้อมูลเปรียบเทียบ fixture เมื่อเปิด request ประเภท Change Model */
+  const handleAccept = async (request) => {
+    if (!acceptPassword) {
+      toast.error('กรุณากรอกรหัสผ่าน')
+      return
+    }
+    setAcceptBusy(true)
+    try {
+      const loginRes = await api.login({ empId: user?.userId || user?.empId, pass: acceptPassword })
+      if (!loginRes?.success) {
+        toast.error('รหัสผ่านไม่ถูกต้อง')
+        return
+      }
+      await api.acceptRequest(request.request_id, user)
+      toast.success('รับงานสำเร็จ')
+      closeAcceptModal()
+      await reloadRows()
+    } catch (err) {
+      toast.error(err.message)
+    } finally {
+      setAcceptBusy(false)
+    }
+  }
+
+  const handleHold = async (request) => {
+    setBusyId(request.request_id)
+    try {
+      await api.holdRequest(request.request_id, user)
+      toast.success('Hold สำเร็จ')
+      await reloadRows()
+      return true
+    } catch (err) {
+      toast.error(err.message)
+      return false
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  const handleReject = async (request) => {
+    setBusyId(request.request_id)
+    try {
+      await api.rejectRequest(request.request_id, user)
+      toast.success('Reject สำเร็จ')
+      await reloadRows()
+      return true
+    } catch (err) {
+      toast.error(err.message)
+      return false
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  const handleComplete = async (request) => {
+    setBusyId(request.request_id)
+    try {
+      await api.completeRequest(request.request_id, user)
+      toast.success('Complete สำเร็จ')
+      await reloadRows()
+      return true
+    } catch (err) {
+      toast.error(err.message)
+      return false
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  const handleIssue = async (request) => {
+    setBusyId(request.request_id)
+    try {
+      let items = []
+      if (isChangeModel(request)) {
+        const from = String(request.currentModel || '').trim()
+        const to = resolveChangeModel(request)
+        const line = String(request.line || '').trim()
+        const data = await api.compareFixtureList({ line, from, to })
+        items = (data?.issue || []).map((x) => x.sn).filter(Boolean)
+      }
+      await api.issueRequest(request.request_id, items.length ? items : [], user)
+      toast.success('Issue สำเร็จ')
+      await reloadRows()
+      return true
+    } catch (err) {
+      toast.error(err.message)
+      return false
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  const handleReturn = async (request) => {
+    setBusyId(request.request_id)
+    try {
+      let items = []
+      if (isChangeModel(request)) {
+        const from = String(request.currentModel || '').trim()
+        const to = resolveChangeModel(request)
+        const line = String(request.line || '').trim()
+        const data = await api.compareFixtureList({ line, from, to })
+        items = (data?.return || []).map((x) => x.sn).filter(Boolean)
+      }
+      await api.returnRequest(request.request_id, items.length ? items : [], user)
+      toast.success('Return สำเร็จ')
+      await reloadRows()
+      return true
+    } catch (err) {
+      toast.error(err.message)
+      return false
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  const handleVerify = async (request) => {
+    setBusyId(request.request_id)
+    try {
+      await api.verifyRequest(request.request_id, user)
+      toast.success('Verify สำเร็จ')
+      await reloadRows()
+      return true
+    } catch (err) {
+      toast.error(err.message)
+      return false
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  const confirmAction = async () => {
+    if (!actionModal) return
+    if (!actionPassword) {
+      toast.error('กรุณากรอกรหัสผ่าน')
+      return
+    }
+    setActionBusy(true)
+    try {
+      const loginRes = await api.login({ empId: user?.userId || user?.empId, pass: actionPassword })
+      if (!loginRes?.success) {
+        toast.error('รหัสผ่านไม่ถูกต้อง')
+        return
+      }
+      const runners = {
+        complete: handleComplete,
+        hold: handleHold,
+        reject: handleReject,
+        issue: handleIssue,
+        return: handleReturn,
+        verify: handleVerify,
+      }
+      const runner = runners[actionModal.action]
+      if (!runner) return
+      const ok = await runner(actionModal.request)
+      if (ok) closeActionModal()
+    } catch (err) {
+      toast.error(err.message)
+    } finally {
+      setActionBusy(false)
+    }
+  }
+
+  const compareSource = detail || acceptModal
+
   useEffect(() => {
-    if (!active) return undefined
-    const from = String(active.model || '').trim()
-    const to = resolveModelTo(active)
-    const line = String(active.line || '').trim()
-    if (!isChangeModel(active) || !line || !from || !to) {
+    if (!compareSource) {
       setCompare(null)
       return undefined
     }
-
+    const from = String(compareSource.currentModel || '').trim()
+    const to = resolveChangeModel(compareSource)
+    const line = String(compareSource.line || '').trim()
+    if (!isChangeModel(compareSource) || !line || !from || !to) {
+      setCompare(null)
+      return undefined
+    }
     let cancelled = false
     setCompareLoading(true)
     setCompareError('')
-    api
-      .compareFixtureList({ line, from, to })
-      .then((data) => {
-        if (!cancelled) setCompare(data)
-      })
-      .catch((err) => {
-        if (!cancelled) setCompareError(err.message)
-      })
-      .finally(() => {
-        if (!cancelled) setCompareLoading(false)
-      })
+    api.compareFixtureList({ line, from, to })
+      .then((data) => { if (!cancelled) setCompare(data) })
+      .catch((err) => { if (!cancelled) setCompareError(err.message) })
+      .finally(() => { if (!cancelled) setCompareLoading(false) })
+    return () => { cancelled = true }
+  }, [compareSource])
 
-    return () => {
-      cancelled = true
-    }
-  }, [active])
-
-  const activeModelTo = active ? resolveModelTo(active) : ''
-  const showCompare = active && isChangeModel(active) && active.line && active.model && activeModelTo
+  const acceptModelTo = acceptModal ? resolveChangeModel(acceptModal) : ''
 
   return (
     <div className="space-y-4">
@@ -187,7 +434,7 @@ export default function OrderPage() {
         {FILTERS.map((f) => (
           <Button
             key={f.value}
-            variant={filter === f.value ? 'primary' : 'secondary'}
+            variant={filter === f.value ? f.variant : 'secondary'}
             size="sm"
             onClick={() => setFilter(f.value)}
           >
@@ -209,146 +456,361 @@ export default function OrderPage() {
           <EmptyState title="ไม่มี Request" />
         </Card>
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {filtered.map((r) => {
-            const modelTo = resolveModelTo(r)
+            const busy = busyId === r.request_id
+            const status = r.status
+            const style = STATUS_STYLE[status] || { bg: 'bg-white', badge: 'bg-slate-600', label: status || 'Unknown' }
+            const changeModel = resolveChangeModel(r)
             return (
-              <button
+              <div
                 key={r.request_id}
-                type="button"
-                onClick={() => openRequest(r)}
-                className="group rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-lg hover:shadow-blue-100/60 focus:outline-none focus-visible:ring-4 focus-visible:ring-blue-500/15"
+                className={`rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col min-h-[300px] hover:shadow-md transition-all text-xs ${style.bg}`}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-[11px] font-bold text-blue-700">{r.request_id}</span>
-                  <RequestStatusBadge status={r.status} />
-                </div>
-                <p className="mt-1 text-[12px] font-semibold text-slate-700">{r.type}</p>
-                <p className="text-[11px] text-slate-500">
-                  {r.line} · {r.model || '-'}
-                  {modelTo ? (
-                    <span className="inline-flex items-center gap-1 text-slate-400">
-                      <ArrowRight className="h-3 w-3" /> {modelTo}
+                {/* Header */}
+                <div className="p-4 border-b border-slate-50 bg-slate-50/30">
+                  <div className="flex justify-between items-start mb-2">
+                    <span className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest shadow-md ${style.badge} text-white`}>
+                      {style.label}
                     </span>
+                    <span className="text-[10px] font-mono text-slate-400 font-bold">{r.request_id}</span>
+                  </div>
+                  <h3 className="text-lg font-extrabold text-slate-800 leading-tight break-words">
+                    {r.type}
+                  </h3>
+                  <div className="mt-2 flex flex-wrap items-center gap-x-2 leading-tight min-w-0">
+                    <p className="text-lg font-extrabold text-slate-900 break-words">{r.line}</p>
+                  </div>
+                </div>
+
+                {/* Body */}
+                <div className="p-4 flex-1 flex flex-col justify-start space-y-3">
+                  <div className="flex justify-between items-center">
+                    <span className="request-type-badge text-[10px] font-bold text-slate-500 uppercase">
+                      {r.type}
+                    </span>
+                  </div>
+
+                  <div className={`p-3 rounded-xl border flex-1 min-h-[60px] shadow-inner transition-colors ${style.bg}`}>
+                    <p className="text-slate-500 font-bold uppercase mb-1 tracking-tighter text-[11px]">DESCRIPTION</p>
+                    {isBreakdown(r) && Array.isArray(r.breakdownItems) && r.breakdownItems.length > 0 ? (
+                      <div className="space-y-1">
+                        {r.breakdownItems.map((it, i) => (
+                          <p key={i} className="text-sm text-slate-700 break-words">
+                            {it.sn || '-'} · {it.symptom || '-'}
+                          </p>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-slate-700 break-words whitespace-pre-wrap">
+                        "{r.desc || '-'}"
+                      </p>
+                    )}
+                    {isChangeModel(r) && changeModel ? (
+                      <p className="mt-1 text-[10px] text-slate-500">
+                        {r.currentModel || '-'} <ArrowRight className="inline h-3 w-3" /> {changeModel}
+                      </p>
+                    ) : null}
+                  </div>
+
+                  <div className="flex justify-between items-center text-[11px]">
+                    <div>
+                      <p className="text-slate-400 font-bold uppercase text-[9px]">REQUESTOR</p>
+                      <p className="font-semibold text-slate-700">{personLabel(r.requestInfo)}</p>
+                    </div>
+                    {(r.acceptInfo || r.issueInfo) ? (
+                      <div>
+                        <p className="text-slate-400 font-bold uppercase text-[9px]">TECHNICIAN</p>
+                        <p className="font-semibold text-slate-700">
+                          {personLabel(r.issueInfo || r.acceptInfo)}
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                {/* Footer buttons */}
+                <div className="p-4 border-t border-slate-50 bg-slate-50/30 space-y-2">
+                  <div className="flex">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="h-9 w-full"
+                      onClick={() => setDetail(r)}
+                    >
+                      <Info className="h-3.5 w-3.5" /> Information
+                    </Button>
+                  </div>
+
+                  <div className="flex gap-2">
+                  {status === 'Waiting' || status === 'Hold' ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="h-9 flex-1 border-red-200 text-red-600 hover:border-red-300 hover:bg-red-50 hover:text-red-700"
+                        disabled={busy}
+                        onClick={() => openActionModal(r, 'reject')}
+                      >
+                        Reject
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={status === 'Hold' ? 'yellow' : 'danger'}
+                        className="h-9 flex-1"
+                        disabled={busy}
+                        onClick={() => openAcceptModal(r)}
+                      >
+                        Accept
+                      </Button>
+                    </>
                   ) : null}
-                </p>
-                {r.desc ? <p className="mt-1 text-[10px] text-slate-400">{r.desc}</p> : null}
-                <p className="mt-2 text-[10px] font-bold text-blue-600 opacity-0 transition-opacity group-hover:opacity-100">
-                  ดูรายละเอียด →
-                </p>
-              </button>
+
+                  {status === 'Progress' ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        className="h-9 flex-1"
+                        disabled={busy}
+                        onClick={() => openActionModal(r, 'complete')}
+                      >
+                        Complete
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="yellow"
+                        className="h-9 flex-1"
+                        disabled={busy}
+                        onClick={() => openActionModal(r, 'hold')}
+                      >
+                        Hold
+                      </Button>
+                    </>
+                  ) : null}
+
+                  {status === 'IssueReturn' ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="purple"
+                        className="h-9 flex-1"
+                        disabled={busy}
+                        onClick={() => openActionModal(r, 'issue')}
+                      >
+                        Issue
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="purple"
+                        className="h-9 flex-1"
+                        disabled={busy}
+                        onClick={() => openActionModal(r, 'return')}
+                      >
+                        Return
+                      </Button>
+                    </>
+                  ) : null}
+
+                  {status === 'Verify' ? (
+                    <Button
+                      size="sm"
+                      variant="success"
+                      className="h-9 flex-1"
+                      disabled={busy}
+                      onClick={() => openActionModal(r, 'verify')}
+                    >
+                      Verify
+                    </Button>
+                  ) : null}
+                  </div>
+                </div>
+              </div>
             )
           })}
         </div>
       )}
 
+      {/* Detail Modal (read-only) */}
       <Modal
-        open={Boolean(active)}
-        onClose={closeRequest}
+        open={Boolean(detail)}
+        onClose={closeDetail}
         size="xl"
         icon={ClipboardList}
-        title={active?.request_id || 'Request'}
-        subtitle={active ? `${active.type || '-'} · ${active.status || '-'}` : ''}
-        tone="blue"
+        title={detail?.request_id || 'Request'}
+        subtitle={detail ? `${detail.type || '-'} · ${detail.status || '-'}` : ''}
+        tone={statusTone(detail?.status)}
       >
-        {active ? (
+        {detail ? (
           <div className="space-y-4">
             <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/60 p-4 sm:grid-cols-3">
-              <InfoRow label="Line">{active.line || '-'}</InfoRow>
+              <InfoRow label="Line">{detail.line || '-'}</InfoRow>
               <InfoRow label="Model">
-                <span className="font-mono text-[11px]">{active.model || '-'}</span>
+                <span className="font-mono text-[11px]">{detail.currentModel || '-'}</span>
               </InfoRow>
               <InfoRow label="Model ใหม่">
-                <span className="font-mono text-[11px]">{activeModelTo || '-'}</span>
+                <span className="font-mono text-[11px]">{resolveChangeModel(detail) || '-'}</span>
               </InfoRow>
-              <InfoRow label="Request type">{active.type || '-'}</InfoRow>
+              <InfoRow label="Request type">{detail.type || '-'}</InfoRow>
               <InfoRow label="ผู้ขอ">
-                {personLabel(active.requestInfo)} · {formatDateTime(active.requestInfo?.date || active.requestTime)}
+                {personLabel(detail.requestInfo)} · {formatDateTime(detail.requestInfo?.date)}
               </InfoRow>
-              <InfoRow label="รายละเอียด">{active.desc || '-'}</InfoRow>
+              <InfoRow label="รายละเอียด">{detail.desc || '-'}</InfoRow>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-3">
-              {[
-                { label: 'Accept', person: active.acceptInfo },
-                { label: 'Prepare fixture', person: active.issueInfo },
-                { label: 'Verify', person: active.verifyInfo },
-              ].map((stage) => (
-                <div
-                  key={stage.label}
-                  className="rounded-2xl border border-slate-200 bg-white p-3"
-                >
-                  <p className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">
-                    {stage.label}
-                  </p>
-                  <p className="mt-1 text-[11px] font-semibold text-slate-700">
-                    {stage.person ? personLabel(stage.person) : 'ยังไม่ดำเนินการ'}
-                  </p>
-                  <p className="text-[10px] text-slate-400">
-                    {stage.person?.date ? formatDateTime(stage.person.date) : '-'}
-                  </p>
-                </div>
-              ))}
-            </div>
-
-            {showCompare ? (
-              <div className="space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="flex items-center gap-2 text-[12px] font-black text-slate-800">
-                    <Wrench className="h-4 w-4 text-blue-600" />
-                    Fixture ที่ต้องเปลี่ยน (ตาม Fixture List)
-                  </p>
-                  <p className="flex items-center gap-1 font-mono text-[10px] font-bold text-slate-500">
-                    {active.model} <ArrowRight className="h-3 w-3" /> {activeModelTo}
-                  </p>
-                </div>
-
-                {compareLoading ? (
-                  <div className="rounded-2xl border border-slate-200 bg-white py-8">
-                    <Spinner />
-                  </div>
-                ) : compareError ? (
-                  <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-[11px] font-semibold text-red-700">
-                    {compareError}
-                  </div>
-                ) : compare ? (
-                  <>
-                    {compare.missing?.from || compare.missing?.to ? (
-                      <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-700">
-                        {compare.missing?.from
-                          ? `ไม่พบ Fixture List ของ model ${active.model} ใน line ${active.line}`
-                          : `ไม่พบ Fixture List ของ model ${activeModelTo} ใน line ${active.line}`}
+            <div className="space-y-2 rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-[11px] font-black uppercase tracking-[0.12em] text-slate-500">
+                ผู้ดำเนินการ (Action users)
+              </p>
+              <div className="divide-y divide-slate-100">
+                {ACTION_PEOPLE.map(({ key, label, dot }) => {
+                  const person = detail[key]
+                  return (
+                    <div key={key} className="flex items-center gap-3 py-2">
+                      <span className={`h-2 w-2 shrink-0 rounded-full ${person ? dot : 'bg-slate-200'}`} />
+                      <p className="w-44 shrink-0 text-[10px] font-black uppercase tracking-wide text-slate-400">
+                        {label}
                       </p>
-                    ) : null}
-
-                    <div className="grid gap-3 sm:grid-cols-3">
-                      {CHANGE_GROUPS.map((group) => (
-                        <ChangeGroup
-                          key={group.key}
-                          title={group.title}
-                          tone={group.tone}
-                          icon={group.icon}
-                          items={compare[group.key] || []}
-                        />
-                      ))}
+                      <p className="min-w-0 flex-1 truncate text-[12px] font-semibold text-slate-700">
+                        {personLabel(person)}
+                        {person?.empId ? (
+                          <span className="ml-1 font-mono text-[10px] font-bold text-slate-400">
+                            ({person.empId})
+                          </span>
+                        ) : null}
+                      </p>
+                      <p className="shrink-0 text-[10px] font-medium text-slate-400">
+                        {person?.date ? formatDateTime(person.date) : '-'}
+                      </p>
                     </div>
-
-                    <p className="text-[10px] font-medium text-slate-400">
-                      รวม{' '}
-                      {(
-                        (compare.total?.issue || 0) +
-                        (compare.total?.return || 0) +
-                        (compare.total?.keep || 0)
-                      ).toLocaleString()}{' '}
-                      รายการ · ต้องเปลี่ยน{' '}
-                      {((compare.total?.issue || 0) + (compare.total?.return || 0)).toLocaleString()} ตัว
-                    </p>
-                  </>
-                ) : (
-                  <p className="text-[11px] text-slate-400">ไม่มีข้อมูลเปรียบเทียบ</p>
-                )}
+                  )
+                })}
+              </div>
+            </div>
+            {isBreakdown(detail) && Array.isArray(detail.breakdownItems) && detail.breakdownItems.length > 0 ? (
+              <div className="space-y-2 rounded-2xl border border-orange-200 bg-orange-50/60 p-4">
+                <p className="text-[11px] font-black text-orange-800">Breakdown — รายการ Fixture ที่เสีย</p>
+                {detail.breakdownItems.map((it, i) => (
+                  <div key={i} className="rounded-xl border border-orange-100 bg-white px-3 py-2 text-[11px]">
+                    <span className="font-mono font-bold text-slate-800">{it.sn || '-'}</span>
+                    <span className="ml-2 text-slate-500">{it.symptom || '-'}</span>
+                  </div>
+                ))}
               </div>
             ) : null}
+            {isChangeModel(detail) ? (
+              <CompareBlock loading={compareLoading} error={compareError} compare={compare} />
+            ) : null}
+          </div>
+        ) : null}
+      </Modal>
+      <Modal
+        open={Boolean(acceptModal)}
+        onClose={closeAcceptModal}
+        size="xl"
+        icon={ClipboardList}
+        title={acceptModal?.request_id || 'Request'}
+        subtitle={acceptModal ? `${acceptModal.type || '-'} · ${acceptModal.status || '-'}` : ''}
+        tone={statusTone(acceptModal?.status)}
+      >
+        {acceptModal ? (
+          <div className="space-y-4">
+            <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/60 p-4 sm:grid-cols-3">
+              <InfoRow label="Line">{acceptModal.line || '-'}</InfoRow>
+              <InfoRow label="Model">
+                <span className="font-mono text-[11px]">{acceptModal.currentModel || '-'}</span>
+              </InfoRow>
+              <InfoRow label="Model ใหม่">
+                <span className="font-mono text-[11px]">{acceptModelTo || '-'}</span>
+              </InfoRow>
+              <InfoRow label="Request type">{acceptModal.type || '-'}</InfoRow>
+              <InfoRow label="ผู้ขอ">
+                {personLabel(acceptModal.requestInfo)} · {formatDateTime(acceptModal.requestInfo?.date)}
+              </InfoRow>
+              <InfoRow label="รายละเอียด">{acceptModal.desc || '-'}</InfoRow>
+            </div>
+
+            {isBreakdown(acceptModal) && Array.isArray(acceptModal.breakdownItems) && acceptModal.breakdownItems.length > 0 ? (
+              <div className="space-y-2 rounded-2xl border border-orange-200 bg-orange-50/60 p-4">
+                <p className="text-[11px] font-black text-orange-800">Breakdown — รายการ Fixture ที่เสีย</p>
+                {acceptModal.breakdownItems.map((it, i) => (
+                  <div key={i} className="rounded-xl border border-orange-100 bg-white px-3 py-2 text-[11px]">
+                    <span className="font-mono font-bold text-slate-800">{it.sn || '-'}</span>
+                    <span className="ml-2 text-slate-500">{it.symptom || '-'}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {isChangeModel(acceptModal) ? (
+              <CompareBlock loading={compareLoading} error={compareError} compare={compare} />
+            ) : null}
+
+            <div className="space-y-2">
+              <p className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">รหัสผ่านเพื่อยืนยันรับงาน</p>
+              <Input
+                type="password"
+                value={acceptPassword}
+                onChange={(e) => setAcceptPassword(e.target.value)}
+                placeholder="รหัสผ่าน"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" size="sm" onClick={closeAcceptModal}>
+                ยกเลิก
+              </Button>
+              <Button variant="danger" size="sm" disabled={acceptBusy} onClick={() => handleAccept(acceptModal)}>
+                {acceptBusy ? 'กำลังรับงาน…' : 'ยืนยันรับงาน'}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      {/* Action confirm modal (password required) */}
+      <Modal
+        open={Boolean(actionModal)}
+        onClose={closeActionModal}
+        size="sm"
+        icon={ClipboardList}
+        title={actionModal ? ACTION_META[actionModal.action]?.hint : ''}
+        subtitle={actionModal?.request?.request_id || ''}
+        tone={statusTone(actionModal?.request?.status)}
+      >
+        {actionModal ? (
+          <div className="space-y-4">
+            <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
+              <InfoRow label="Line">{actionModal.request?.line || '-'}</InfoRow>
+              <InfoRow label="Request type">{actionModal.request?.type || '-'}</InfoRow>
+              <InfoRow label="สถานะ">
+                {actionModal.request?.status || '-'} → {ACTION_META[actionModal.action]?.label}
+              </InfoRow>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">รหัสผ่านเพื่อยืนยัน</p>
+              <Input
+                type="password"
+                value={actionPassword}
+                onChange={(e) => setActionPassword(e.target.value)}
+                placeholder="รหัสผ่าน"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" size="sm" onClick={closeActionModal}>
+                ยกเลิก
+              </Button>
+              <Button
+                variant={actionModal.action === 'hold' ? 'yellow' : actionModal.action === 'verify' ? 'success' : 'primary'}
+                size="sm"
+                disabled={actionBusy}
+                onClick={confirmAction}
+              >
+                {actionBusy ? 'กำลังดำเนินการ…' : 'ยืนยัน'}
+              </Button>
+            </div>
           </div>
         ) : null}
       </Modal>

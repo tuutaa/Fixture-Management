@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, Boxes, PackageCheck, Printer, Search, Upload, Wrench } from 'lucide-react'
+import { Activity, Boxes, PackageCheck, Search, Upload, Wrench } from 'lucide-react'
 import api from '../lib/api'
 import { buildFixtureListItems } from '../lib/fixtureImport'
 import {
@@ -19,7 +19,6 @@ import DataTable from '../components/ui/DataTable'
 import Modal from '../components/ui/Modal'
 import SearchableSelect from '../components/ui/SearchableSelect'
 import { formatDateTime } from '../lib/format'
-import { printStickers } from '../lib/print'
 import { useToast } from '../components/ui/Toast'
 
 /* Preferred column order for the fixture-list matrix. */
@@ -324,21 +323,6 @@ export default function FixtureListPage() {
 
   const openDetail = (sn) => setActive(detailMap.get(sn) || { sn })
 
-  const doPrint = (row) => {
-    printStickers(
-      [
-        {
-          SN: row.sn,
-          Name: row.type || 'Fixture',
-          Model: row.model,
-          Line: row.line,
-          ExpiredDate: row.usage?.exp,
-        },
-      ],
-      { title: `Fixture ${row.sn}` },
-    )
-  }
-
   const flatColumns = [
     {
       key: 'sn',
@@ -406,17 +390,6 @@ export default function FixtureListPage() {
       header: 'Status',
       align: 'center',
       render: (row) => <FixtureStatusBadge status={row.status} />,
-    },
-    {
-      key: 'print',
-      header: '',
-      align: 'right',
-      sortable: false,
-      render: (row) => (
-        <Button size="sm" variant="ghost" icon={Printer} onClick={() => doPrint(row)}>
-          Print
-        </Button>
-      ),
     },
   ]
 

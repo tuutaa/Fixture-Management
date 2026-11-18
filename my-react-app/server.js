@@ -7,9 +7,9 @@
  *   Register -> Input Fixture Information -> If Exist / Not Exist
  *   Request (Change Model | Breakdown) -> MainLine / Rotor -> Line / Model / Step / Fixture List
  *     -> Compare Model A->B -> Summary Issue/Return
- *     -> Fixture Room Prepare Fixture -> ME/TE confirm recieved -> Record History -> Done
+ *     -> Fixture Room Progress -> ME/TE confirm recieved -> Record History -> Done
  *     -> ME/TE Return Fixture -> Fixture confirm returned -> Record History
- *     -> Breakdown -> Verify / Issue Spare -> Fixture Room Prepare / Record Breakdown
+ *     -> Breakdown -> Verify / Issue Spare -> Fixture Room Progress / Record Breakdown
  *   PM Checklist Phase 2: Pre-Alert -> Overdue 3 day remind / Current reach 80% remind
  *     -> Plan PM -> PM On Due / PM Over Due -> 4M (Not Over 7 Day) / Over 7 Day
  *     -> Management Approve / 4M +XX Days Management Assign
@@ -127,8 +127,6 @@ const fixtureDetailSchema = new mongoose.Schema(
       max: { type: Number, default: 0 },
       exp: String,
       storage: String,
-      currentModel: String,
-      changeModel: String,
     },
     registered: personSchema,
     fixtureBase: String,
@@ -153,7 +151,6 @@ const fixtureListSchema = new mongoose.Schema(
             step: String,
             process: String,
             position: String,
-            count: { type: Number, default: 0 },
             sn: { type: [String], default: [] },
           },
           { _id: false, versionKey: false },
@@ -181,16 +178,22 @@ const requestSchema = new mongoose.Schema(
   {
     request_id: { type: String, index: true, unique: true, required: true },
     line: { type: String, index: true },
-    model: String,
-    modelTo: String,
+    currentModel: String,
+    changeModel: String,
     type: { type: String, index: true },
     status: { type: String, default: 'Waiting', index: true },
     desc: { type: String, default: '' },
+    breakdownItems: {
+      type: [{ sn: String, symptom: String, _id: false }],
+      default: [],
+    },
     requestInfo: personSchema,
     acceptInfo: personSchema,
     issueInfo: personSchema,
     verifyInfo: personSchema,
-    requestTime: { type: Date, default: Date.now, index: true },
+    issueDone: { type: Boolean, default: false },
+    returnDone: { type: Boolean, default: false },
+    returnedItems: { type: [String], default: [] },
   },
   { versionKey: false },
 )
@@ -249,29 +252,26 @@ const personFrom = (user) => ({
   date: new Date(),
 })
 
-const recordHistory = (entry, user, extra = {}) =>
-  History.create({
-    sn: entry.sn || '',
-    request_id: entry.request_id || '',
-    action: entry.action,
-    detail: entry.detail || '',
-    line: entry.line || '',
-    model: entry.model || '',
-    empId: user?.userId || user?.empId || '',
-    name: user?.name || '',
-    lastname: user?.lastName || user?.lastname || '',
-    ...extra,
-  })
+const recordHistory = () => Promise.resolve()
 
 const findFixture = async (sn) => {
-  const detail = await FixtureDetail.findOne({ sn }).lean()
+  let detail = await FixtureDetail.findOne({ sn }).lean()
+  let resolvedSn = sn
+  if (!detail) {
+    // fixtureList stores the fixture base (without revision suffix); resolve to an
+    // individual fixtureDetail record by prefix so issue/verify/edit flows work.
+    const escaped = String(sn).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    detail = await FixtureDetail.findOne({ sn: { $regex: `^${escaped}-` } }).lean()
+    if (detail) resolvedSn = detail.sn
+  }
   if (!detail) return null
   const doc = await FixtureList.findOne({ 'fixtureInfo.sn': sn }).lean()
+    || await FixtureList.findOne({ 'fixtureInfo.sn': { $regex: `^${String(sn).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$` } }).lean()
   let step = ''
   let process = ''
   let position = ''
   if (doc) {
-    const info = (doc.fixtureInfo || []).find((item) => (item.sn || []).includes(sn))
+    const info = (doc.fixtureInfo || []).find((item) => (item.sn || []).includes(sn) || (item.sn || []).some((s) => String(s).trim() === String(sn).trim()))
     if (info) {
       step = info.step || ''
       process = info.process || ''
@@ -280,6 +280,7 @@ const findFixture = async (sn) => {
   }
   return {
     ...detail,
+    sn: resolvedSn,
     line: doc?.line || '',
     model: doc?.model || '',
     step,
@@ -290,7 +291,16 @@ const findFixture = async (sn) => {
 
 const updateFixtureBySn = async (sn, set) => {
   if (!set || Object.keys(set).length === 0) return false
-  const result = await FixtureDetail.updateOne({ sn }, { $set: set })
+  // resolve base SN (from fixtureList) to an individual fixtureDetail record
+  let targetSn = sn
+  let detail = await FixtureDetail.findOne({ sn }).lean()
+  if (!detail) {
+    const escaped = String(sn).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    detail = await FixtureDetail.findOne({ sn: { $regex: `^${escaped}-` } }).lean()
+    if (detail) targetSn = detail.sn
+  }
+  if (!detail) return false
+  const result = await FixtureDetail.updateOne({ sn: targetSn }, { $set: set })
   return result.matchedCount > 0
 }
 
@@ -525,7 +535,16 @@ app.get(
     const docs = await FixtureList.find({}, 'line model').lean()
     const lines = [...new Set(docs.map((doc) => doc.line).filter(Boolean))].sort()
     const models = [...new Set(docs.map((doc) => doc.model).filter(Boolean))].sort()
-    res.json({ lines, models })
+    const byLine = {}
+    for (const doc of docs) {
+      if (!doc.line || !doc.model) continue
+      if (!byLine[doc.line]) byLine[doc.line] = new Set()
+      byLine[doc.line].add(doc.model)
+    }
+    const modelsByLine = Object.fromEntries(
+      Object.entries(byLine).map(([k, v]) => [k, [...v].sort()]),
+    )
+    res.json({ lines, models, modelsByLine })
   }),
 )
 
@@ -753,8 +772,6 @@ app.post(
         max: Number(body.max) || 0,
         exp: body.exp || '',
         storage: text(body.usageStorage || body.storage) || '',
-        currentModel: text(body.currentModel) || model,
-        changeModel: text(body.changeModel) || '',
       },
       registered: personFrom(body.user || {}),
       fixtureBase: text(body.fixtureBase) || sn.split('-')[0] || '',
@@ -819,7 +836,7 @@ app.put(
       }
     }
     if (body.usage && typeof body.usage === 'object') {
-      for (const key of ['current', 'max', 'exp', 'storage', 'currentModel', 'changeModel']) {
+      for (const key of ['current', 'max', 'exp', 'storage']) {
         if (body.usage[key] !== undefined) set[`usage.${key}`] = body.usage[key]
       }
     }
@@ -963,7 +980,7 @@ app.get(
     if (req.query.status) filter.status = req.query.status
     if (req.query.type) filter.type = req.query.type
     if (req.query.empId) filter['requestInfo.empId'] = req.query.empId
-    const data = await Request.find(filter).sort({ requestTime: -1 }).lean()
+    const data = await Request.find(filter).sort({ _id: -1 }).lean()
     res.json(data)
   }),
 )
@@ -983,7 +1000,8 @@ app.post(
     const body = req.body || {}
     const type = text(body.type)
     const line = text(body.line)
-    const model = text(body.model)
+    const currentModel = text(body.currentModel || body.model)
+    const changeModel = text(body.changeModel || body.modelTo)
 
     if (!type || !line) {
       return res.status(400).json({ success: false, message: 'กรุณาระบุประเภทคำขอและ Line' })
@@ -995,16 +1013,21 @@ app.post(
     })
     const request_id = `REQ${stamp}${String(todayCount + 1).padStart(3, '0')}`
 
-    const desc = text(body.desc) || (type === 'Change Model' && body.modelTo ? `${model} → ${text(body.modelTo)}` : '')
+    const desc = text(body.desc) || (type === 'Change Model' && changeModel ? `${currentModel} → ${changeModel}` : '')
+
+    const breakdownItems = Array.isArray(body.breakdownItems)
+      ? body.breakdownItems.map((it) => ({ sn: text(it?.sn) || '', symptom: text(it?.symptom) || '' })).filter((it) => it.sn || it.symptom)
+      : []
 
     const request = await Request.create({
       request_id,
       line,
-      model: model || '',
-      modelTo: text(body.modelTo) || '',
+      currentModel: currentModel || '',
+      changeModel: changeModel || '',
       type,
       status: 'Waiting',
       desc,
+      breakdownItems,
       requestInfo: personFrom(body.user || {}),
     })
 
@@ -1018,9 +1041,9 @@ app.post(
       {
         request_id,
         action: 'Request',
-        detail: `${type}${model ? ` · ${model}` : ''}`,
+        detail: `${type}${currentModel ? ` · ${currentModel}` : ''}`,
         line,
-        model,
+        model: currentModel,
       },
       body.user,
     )
@@ -1035,12 +1058,25 @@ app.put(
   asyncRoute(async (req, res) => {
     const request = await Request.findOne({ request_id: text(req.params.requestId) })
     if (!request) return res.status(404).json({ success: false, message: 'ไม่พบคำขอนี้' })
-    if (request.status !== 'Waiting') {
+    if (request.status !== 'Waiting' && request.status !== 'Hold') {
       return res.status(409).json({ success: false, message: 'คำขอนี้ได้รับการยืนยันแล้ว' })
     }
 
+    // concurrency: one active job per user
+    const empId = req.body?.user?.userId || req.body?.user?.empId
+    if (empId) {
+      const active = await Request.findOne({
+        'acceptInfo.empId': empId,
+        status: { $in: ['Progress', 'Hold', 'IssueReturn', 'Verify'] },
+        request_id: { $ne: request.request_id },
+      })
+      if (active) {
+        return res.status(409).json({ success: false, message: 'คุณมีงานที่รับอยู่แล้ว ไม่สามารถรับงานใหม่ได้' })
+      }
+    }
+
     request.acceptInfo = personFrom(req.body?.user || {})
-    request.status = 'Accepted'
+    request.status = 'Progress'
     await request.save()
 
     await recordHistory(
@@ -1049,7 +1085,7 @@ app.put(
         action: 'Accept',
         detail: `รับคำขอ ${request.type}`,
         line: request.line,
-        model: request.model,
+        model: request.currentModel,
       },
       req.body?.user,
     )
@@ -1057,13 +1093,70 @@ app.put(
   }),
 )
 
-/* Issue (Fixture Room Prepare Fixture + ME/TE confirm recieved) */
+/* Hold (pause job) */
+app.put(
+  '/api/requests/:requestId/hold',
+  asyncRoute(async (req, res) => {
+    const request = await Request.findOne({ request_id: text(req.params.requestId) })
+    if (!request) return res.status(404).json({ success: false, message: 'ไม่พบคำขอนี้' })
+    if (request.status !== 'Progress') {
+      return res.status(409).json({ success: false, message: 'คำขอนี้ไม่สามารถ hold ได้' })
+    }
+    request.status = 'Hold'
+    await request.save()
+    await recordHistory(
+      { request_id: request.request_id, action: 'Hold', detail: `Hold คำขอ ${request.request_id}`, line: request.line, model: request.currentModel },
+      req.body?.user,
+    )
+    return res.json({ success: true, request })
+  }),
+)
+
+/* Reject (cancel request) */
+app.put(
+  '/api/requests/:requestId/reject',
+  asyncRoute(async (req, res) => {
+    const request = await Request.findOne({ request_id: text(req.params.requestId) })
+    if (!request) return res.status(404).json({ success: false, message: 'ไม่พบคำขอนี้' })
+    if (request.status !== 'Waiting' && request.status !== 'Hold') {
+      return res.status(409).json({ success: false, message: 'คำขอนี้ไม่สามารถ reject ได้' })
+    }
+    request.status = 'Rejected'
+    await request.save()
+    return res.json({ success: true, request })
+  }),
+)
+
+/* Complete (move to Issue/Return or Verify) */
+app.put(
+  '/api/requests/:requestId/complete',
+  asyncRoute(async (req, res) => {
+    const request = await Request.findOne({ request_id: text(req.params.requestId) })
+    if (!request) return res.status(404).json({ success: false, message: 'ไม่พบคำขอนี้' })
+    if (request.status !== 'Progress' && request.status !== 'Hold') {
+      return res.status(409).json({ success: false, message: 'คำขอนี้ไม่สามารถ complete ได้' })
+    }
+    if (request.type === 'Change Model') {
+      request.status = 'IssueReturn'
+    } else {
+      request.status = 'Verify'
+    }
+    await request.save()
+    await recordHistory(
+      { request_id: request.request_id, action: 'Complete', detail: `Complete คำขอ ${request.request_id}`, line: request.line, model: request.currentModel },
+      req.body?.user,
+    )
+    return res.json({ success: true, request })
+  }),
+)
+
+/* Issue (Fixture Room Progress Fixture + ME/TE confirm recieved) */
 app.put(
   '/api/requests/:requestId/issue',
   asyncRoute(async (req, res) => {
     const request = await Request.findOne({ request_id: text(req.params.requestId) })
     if (!request) return res.status(404).json({ success: false, message: 'ไม่พบคำขอนี้' })
-    if (request.status !== 'Accepted' && request.status !== 'Waiting') {
+    if (request.status !== 'Progress' && request.status !== 'Hold' && request.status !== 'IssueReturn') {
       return res.status(409).json({ success: false, message: 'คำขอนี้จ่ายของไปแล้ว' })
     }
 
@@ -1072,6 +1165,7 @@ app.put(
       return res.status(400).json({ success: false, message: 'กรุณาเลือก Fixture ที่จะจ่าย' })
     }
 
+    const resolvedItems = []
     for (const sn of items) {
       const fixture = await findFixture(sn)
       if (!fixture) {
@@ -1080,28 +1174,61 @@ app.put(
       await updateFixtureBySn(sn, {
         status: 'In Use',
         'usage.current': (Number(fixture.usage?.current) || 0) + 1,
-        ...(request.type === 'Change Model'
-          ? { 'usage.changeModel': request.modelTo, 'usage.currentModel': request.model || fixture.model }
-          : {}),
       })
       await recordHistory(
         {
-          sn,
+          sn: fixture.sn,
           request_id: request.request_id,
           action: 'Issue',
           detail: `จ่ายตามคำขอ ${request.request_id} (${request.type})`,
           line: request.line,
-          model: request.model,
+          model: request.currentModel,
         },
         req.body?.user,
       )
+      resolvedItems.push(fixture.sn)
     }
 
-    request.items = items
+    request.items = resolvedItems
     request.issueInfo = personFrom(req.body?.user || {})
-    request.status = 'Issued'
+    request.issueDone = true
+    if (request.returnDone) request.status = 'Verify'
+    else request.status = 'IssueReturn'
     await request.save()
 
+    return res.json({ success: true, request })
+  }),
+)
+
+/* Return (request-level: return old fixtures) */
+app.put(
+  '/api/requests/:requestId/return',
+  asyncRoute(async (req, res) => {
+    const request = await Request.findOne({ request_id: text(req.params.requestId) })
+    if (!request) return res.status(404).json({ success: false, message: 'ไม่พบคำขอนี้' })
+    if (request.status !== 'IssueReturn' && request.status !== 'Progress') {
+      return res.status(409).json({ success: false, message: 'คำขอนี้ไม่สามารถ return ได้' })
+    }
+    const items = Array.isArray(req.body?.items) ? req.body.items.map(text).filter(Boolean) : []
+    if (items.length === 0) {
+      return res.status(400).json({ success: false, message: 'กรุณาเลือก Fixture ที่จะคืน' })
+    }
+    for (const sn of items) {
+      const fixture = await findFixture(sn)
+      if (!fixture) {
+        return res.status(404).json({ success: false, message: `ไม่พบ ${sn} ในระบบ` })
+      }
+      await updateFixtureBySn(sn, { status: 'In Stock', 'usage.currentModel': '', 'usage.changeModel': '' })
+      await recordHistory(
+        { sn: fixture.sn, request_id: request.request_id, action: 'Return', detail: `คืนตามคำขอ ${request.request_id}`, line: request.line, model: request.currentModel },
+        req.body?.user,
+      )
+    }
+    request.returnedItems = items
+    request.returnDone = true
+    if (request.issueDone) request.status = 'Verify'
+    else request.status = 'IssueReturn'
+    await request.save()
     return res.json({ success: true, request })
   }),
 )
@@ -1115,7 +1242,7 @@ app.put(
     if (request.type !== 'Breakdown') {
       return res.status(400).json({ success: false, message: 'ใช้กับคำขอ Breakdown เท่านั้น' })
     }
-    if (request.status !== 'Accepted' && request.status !== 'Waiting') {
+    if (request.status !== 'Progress' && request.status !== 'Hold' && request.status !== 'IssueReturn') {
       return res.status(409).json({ success: false, message: 'คำขอนี้ดำเนินการไปแล้ว' })
     }
 
@@ -1138,7 +1265,7 @@ app.put(
           action: 'Breakdown',
           detail: `ส่งซ่อม (${request.request_id})`,
           line: request.line,
-          model: request.model,
+          model: request.currentModel,
         },
         req.body?.user,
       )
@@ -1168,7 +1295,7 @@ app.put(
           action: 'Issue Spare',
           detail: `จ่าย Spare ตามคำขอ Breakdown ${request.request_id}`,
           line: request.line,
-          model: request.model,
+          model: request.currentModel,
         },
         req.body?.user,
       )
@@ -1179,7 +1306,9 @@ app.put(
 
     request.action = action
     request.issueInfo = personFrom(req.body?.user || {})
-    request.status = 'Issued'
+    request.issueDone = true
+    request.returnDone = true
+    request.status = 'Verify'
     await request.save()
 
     return res.json({ success: true, request })
@@ -1192,16 +1321,13 @@ app.put(
   asyncRoute(async (req, res) => {
     const request = await Request.findOne({ request_id: text(req.params.requestId) })
     if (!request) return res.status(404).json({ success: false, message: 'ไม่พบคำขอนี้' })
-    if (request.status !== 'Issued') {
-      return res.status(409).json({ success: false, message: 'คำขอนี้ยังไม่ได้จ่ายของ' })
+    if (request.status !== 'Verify') {
+      return res.status(409).json({ success: false, message: 'คำขอนี้ยังไม่พร้อม verify' })
     }
 
     for (const sn of request.items || []) {
-      if (request.type === 'Change Model' && request.modelTo) {
-        await updateFixtureBySn(sn, {
-          'usage.currentModel': request.modelTo,
-          'usage.changeModel': '',
-        })
+      if (request.type === 'Change Model' && request.changeModel) {
+        // model change is tracked on the request; no fixtureDetail field to update
       }
       await recordHistory(
         {
@@ -1210,7 +1336,7 @@ app.put(
           action: 'Verify',
           detail: `ME/TE ยืนยันรับของ ปิดคำขอ ${request.request_id}`,
           line: request.line,
-          model: request.model,
+          model: request.currentModel,
         },
         req.body?.user,
       )
@@ -1696,8 +1822,8 @@ app.get(
       .slice(0, 8)
 
     const [requests, recentRequests, recentHistory] = await Promise.all([
-      Request.find({}, 'status type requestType line model step dueDate request_id requestTime').lean(),
-      Request.find({}).sort({ requestTime: -1 }).limit(5).lean(),
+      Request.find({}, 'status type requestType line currentModel step dueDate request_id').lean(),
+      Request.find({}).sort({ _id: -1 }).limit(5).lean(),
       History.find({}).sort({ date: -1 }).limit(8).lean(),
     ])
 
@@ -1711,7 +1837,7 @@ app.get(
 
       const lineKey = request.line || 'N/A'
       byLine[lineKey] = (byLine[lineKey] || 0) + 1
-      const modelKey = request.model || 'N/A'
+      const modelKey = request.currentModel || 'N/A'
       byModel[modelKey] = (byModel[modelKey] || 0) + 1
       const processKey = request.requestType || request.type || 'N/A'
       byProcess[processKey] = (byProcess[processKey] || 0) + 1

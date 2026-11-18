@@ -45,8 +45,6 @@ const emptyForm = {
   max: 0,
   exp: '',
   usageStorage: '',
-  currentModel: '',
-  changeModel: '',
   desc: '',
   registeredDate: '',
 }
@@ -63,8 +61,6 @@ const formFromFixture = (fixture) => ({
   max: Number(fixture.usage?.max) || 0,
   exp: toDateInput(fixture.usage?.exp),
   usageStorage: fixture.usage?.storage || fixture.storage || '',
-  currentModel: fixture.usage?.currentModel || '',
-  changeModel: fixture.usage?.changeModel || '',
   desc: fixture.desc || '',
   registeredDate: toDateInput(fixture.registered?.date),
 })
@@ -194,8 +190,6 @@ export default function EditFixturePage({ user, onNavigate }) {
           max: Number(form.max) || 0,
           exp: form.exp,
           storage: form.usageStorage,
-          currentModel: form.currentModel,
-          changeModel: form.changeModel,
         },
         user,
       }
@@ -474,8 +468,6 @@ export default function EditFixturePage({ user, onNavigate }) {
                   <InfoRow label="Fixture Base" value={fixture.fixtureBase} mono />
                   <InfoRow label="Usage" value={`${fixture.usage?.current || 0} / ${fixture.usage?.max || 0}`} />
                   <InfoRow label="Exp" value={formatDate(fixture.usage?.exp)} />
-                  <InfoRow label="Current Model" value={fixture.usage?.currentModel} />
-                  <InfoRow label="Change Model" value={fixture.usage?.changeModel} />
                   <InfoRow
                     label="Registered"
                     value={[fixture.registered?.name, fixture.registered?.lastname].filter(Boolean).join(' ') || '-'}
@@ -602,18 +594,6 @@ export default function EditFixturePage({ user, onNavigate }) {
                         value={form.desc}
                         onChange={(event) => setField('desc', event.target.value)}
                         placeholder="รายละเอียดเพิ่มเติม"
-                      />
-                    </FormField>
-                    <FormField label="Current Model">
-                      <Input
-                        value={form.currentModel}
-                        onChange={(event) => setField('currentModel', event.target.value)}
-                      />
-                    </FormField>
-                    <FormField label="Change Model">
-                      <Input
-                        value={form.changeModel}
-                        onChange={(event) => setField('changeModel', event.target.value)}
                       />
                     </FormField>
                   </div>

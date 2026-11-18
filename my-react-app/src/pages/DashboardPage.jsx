@@ -150,7 +150,7 @@ export default function DashboardPage() {
                 <div key={request.request_id} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 px-3.5 py-2.5">
                   <div className="min-w-0">
                     <p className="truncate text-[11px] font-semibold text-slate-700">{request.request_id} · {request.line || '-'}</p>
-                    <p className="truncate text-[10px] text-slate-400">{request.type} · {request.model || '-'}</p>
+                    <p className="truncate text-[10px] text-slate-400">{request.type} · {request.currentModel || '-'}</p>
                   </div>
                   <div className="shrink-0 text-right">
                     <p className="font-mono text-[11px] font-bold text-slate-700">{request.dueDate}</p>
@@ -231,8 +231,8 @@ export default function DashboardPage() {
                 <div key={request.request_id} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 px-3 py-2">
                   <div className="min-w-0">
                     <p className="font-mono text-[11px] font-black text-blue-700">{request.request_id}</p>
-                    <p className="truncate text-[11px] font-semibold text-slate-600">{request.type}{request.model ? ` · ${request.model}` : ''}</p>
-                    <p className="mt-0.5 text-[10px] text-slate-400">{request.line || '-'} · {formatDateTime(request.requestTime)}</p>
+                    <p className="truncate text-[11px] font-semibold text-slate-600">{request.type}{request.currentModel ? ` · ${request.currentModel}` : ''}</p>
+                    <p className="mt-0.5 text-[10px] text-slate-400">{request.line || '-'} · {formatDateTime(request.requestInfo?.date)}</p>
                   </div>
                   <RequestStatusBadge status={request.status} />
                 </div>

@@ -28,6 +28,18 @@ const TONES = {
     subtitle: 'text-emerald-600',
     tile: 'bg-emerald-100 text-emerald-600',
   },
+  yellow: {
+    header: 'border-yellow-100 bg-yellow-50/60',
+    title: 'text-yellow-950',
+    subtitle: 'text-yellow-700',
+    tile: 'bg-yellow-100 text-yellow-700',
+  },
+  purple: {
+    header: 'border-purple-100 bg-purple-50/60',
+    title: 'text-purple-950',
+    subtitle: 'text-purple-600',
+    tile: 'bg-purple-100 text-purple-600',
+  },
   slate: {
     header: 'border-slate-100 bg-slate-50',
     title: 'text-slate-900',

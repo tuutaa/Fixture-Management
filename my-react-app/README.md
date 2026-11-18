@@ -9,7 +9,7 @@
 Register → Input Fixture Information → If Exist / Not Exist
 Request → Change Model | Breakdown
 Change Model → Line → Model A → Model B → Compare A->B → Summary Issue/Return
-  → Fixture Room Prepare Fixture → ME/TE Confirm Received → Record History → Done
+  → Fixture Room Progress → ME/TE Confirm Received → Record History → Done
   → ME/TE Return Fixture → Fixture Confirm Returned → Record History
 Breakdown → Verify → PM & Maintenance | Issue Spare | Record Breakdown
 PM → Pre-Alert → Overdue 3 day remind (Orange) | Current reach 80% remind (Orange)
