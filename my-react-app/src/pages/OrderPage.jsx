@@ -25,7 +25,7 @@ const FILTERS = [
   { value: '', label: 'All', variant: 'slate' },
   { value: 'Waiting', label: 'Waiting', variant: 'danger' },
   { value: 'Progress', label: 'Progress', variant: 'primary' },
-  { value: 'Hold', label: 'Hold', variant: 'yellow' },
+  { value: 'Hold', label: 'Hold', variant: 'warning' },
   { value: 'IssueReturn', label: 'Issue / Return', variant: 'purple' },
   { value: 'Verify', label: 'Verify', variant: 'success' },
 ]
@@ -33,7 +33,7 @@ const FILTERS = [
 const STATUS_TONE = {
   Waiting: 'red',
   Progress: 'blue',
-  Hold: 'yellow',
+  Hold: 'orange',
   IssueReturn: 'purple',
   Verify: 'emerald',
   Done: 'emerald',
@@ -67,7 +67,7 @@ const InfoRow = ({ label, children }) => (
 const STATUS_STYLE = {
   Waiting: { bg: 'bg-red-50', badge: 'bg-red-600', label: 'WAITING' },
   Progress: { bg: 'bg-blue-50', badge: 'bg-blue-600', label: 'PROGRESS' },
-  Hold: { bg: 'bg-yellow-50', badge: 'bg-yellow-500', label: 'HOLD' },
+  Hold: { bg: 'bg-orange-50', badge: 'bg-orange-500', label: 'HOLD' },
   IssueReturn: { bg: 'bg-purple-50', badge: 'bg-purple-600', label: 'ISSUE/RETURN' },
   Verify: { bg: 'bg-emerald-50', badge: 'bg-emerald-600', label: 'VERIFY' },
   Done: { bg: 'bg-emerald-50', badge: 'bg-emerald-600', label: 'DONE' },
@@ -548,7 +548,7 @@ export default function OrderPage({ user }) {
                       <Button
                         size="sm"
                         variant="secondary"
-                        className="h-9 flex-1 border-red-200 text-red-600 hover:border-red-300 hover:bg-red-50 hover:text-red-700"
+                        className="h-9 flex-[3] border-red-200 text-red-600 hover:border-red-300 hover:bg-red-50 hover:text-red-700"
                         disabled={busy}
                         onClick={() => openActionModal(r, 'reject')}
                       >
@@ -556,8 +556,8 @@ export default function OrderPage({ user }) {
                       </Button>
                       <Button
                         size="sm"
-                        variant={status === 'Hold' ? 'yellow' : 'danger'}
-                        className="h-9 flex-1"
+                        variant={status === 'Hold' ? 'warning' : 'danger'}
+                        className="h-9 flex-[7]"
                         disabled={busy}
                         onClick={() => openAcceptModal(r)}
                       >
@@ -570,21 +570,21 @@ export default function OrderPage({ user }) {
                     <>
                       <Button
                         size="sm"
-                        variant="primary"
-                        className="h-9 flex-1"
-                        disabled={busy}
-                        onClick={() => openActionModal(r, 'complete')}
-                      >
-                        Complete
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="yellow"
-                        className="h-9 flex-1"
+                        variant="warning"
+                        className="h-9 flex-[3]"
                         disabled={busy}
                         onClick={() => openActionModal(r, 'hold')}
                       >
                         Hold
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        className="h-9 flex-[7]"
+                        disabled={busy}
+                        onClick={() => openActionModal(r, 'complete')}
+                      >
+                        Complete
                       </Button>
                     </>
                   ) : null}
@@ -803,7 +803,7 @@ export default function OrderPage({ user }) {
                 ยกเลิก
               </Button>
               <Button
-                variant={actionModal.action === 'hold' ? 'yellow' : actionModal.action === 'verify' ? 'success' : 'primary'}
+                variant={actionModal.action === 'hold' ? 'warning' : actionModal.action === 'verify' ? 'success' : 'primary'}
                 size="sm"
                 disabled={actionBusy}
                 onClick={confirmAction}
