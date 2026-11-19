@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import AppShell from './components/AppShell'
 import { ToastProvider } from './components/ui/Toast'
+import LanguageSwitcher from './components/LanguageSwitcher'
 import { ALL_NAV_ITEMS, DEFAULT_PAGE } from './lib/navigation'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
@@ -92,6 +93,7 @@ export default function App() {
     return (
       <ToastProvider>
         <LoginPage onLogin={handleLogin} />
+        <LanguageSwitcher />
       </ToastProvider>
     )
   }

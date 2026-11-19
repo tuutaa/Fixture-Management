@@ -201,3 +201,31 @@ input[type="number"] {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* PM & Maintenance — sticker พิมพ์หลัง Verify OK */
+.pm-sticker {
+  display: none;
+}
+
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  .pm-sticker,
+  .pm-sticker * {
+    visibility: visible !important;
+  }
+  .pm-sticker {
+    display: block !important;
+    position: absolute;
+    left: 12mm;
+    top: 12mm;
+    font-family: monospace;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .pm-sticker-sn {
+    font-size: 20px;
+    font-weight: 900;
+  }
+}

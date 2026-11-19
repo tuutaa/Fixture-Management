@@ -12,6 +12,7 @@ import { FormField, Input, NativeSelect } from '../components/ui/Field'
 import { useToast } from '../components/ui/Toast'
 import SearchableSelect from '../components/ui/SearchableSelect'
 import Button from '../components/ui/Button'
+import { useLabels, useServerMessage } from '../lib/i18n'
 
 const EMPTY_FORM = {
   type: 'Change Model',
@@ -24,6 +25,8 @@ const EMPTY_FORM = {
 }
 
 export default function RequestPage({ user }) {
+  const { t, requestType } = useLabels()
+  const sm = useServerMessage()
   const toast = useToast()
   const [form, setForm] = useState(EMPTY_FORM)
   const [options, setOptions] = useState({ lines: [], models: [], modelsByLine: {} })
@@ -59,17 +62,17 @@ export default function RequestPage({ user }) {
   const submit = async (event) => {
     event.preventDefault()
     if (!form.line) {
-      toast.error('กรุณาระบุ Line')
+      toast.error(t('กรุณาระบุ Line', 'Please specify a line'))
       return
     }
     if (isChangeModel && (!form.currentModel || !form.changeModel)) {
-      toast.error('กรุณาระบุ Model')
+      toast.error(t('กรุณาระบุ Model', 'Please specify a model'))
       return
     }
     if (isBreakdown) {
       const valid = (form.breakdownItems || []).some((it) => it.sn.trim())
       if (!valid) {
-        toast.error('กรุณาระบุ Serial Number อย่างน้อย 1 ตัว')
+        toast.error(t('กรุณาระบุ Serial Number อย่างน้อย 1 ตัว', 'Please specify at least one serial number'))
         return
       }
     }
@@ -82,10 +85,10 @@ export default function RequestPage({ user }) {
         delete payload.breakdownItems
       }
       const result = await api.createRequest(payload)
-      toast.success(`สร้างคำขอ ${result.request_id} สำเร็จ`)
+      toast.success(t(`สร้างคำขอ ${result.request_id} สำเร็จ`, `Request ${result.request_id} created successfully`))
       setForm(EMPTY_FORM)
     } catch (err) {
-      toast.error(err.message)
+      toast.error(sm(err.message))
     } finally {
       setBusy(false)
     }
@@ -112,14 +115,14 @@ export default function RequestPage({ user }) {
     })
   }
 
-  if (loading) return <Spinner />
+  if (loading) return <Spinner label={t('กำลังโหลดข้อมูล…', 'Loading…')} />
 
   return (
     <div className="space-y-4">
-      <PageHeader eyebrow="Operations" icon={FilePlus2} title="Request" />
+      <PageHeader eyebrow={t('การดำเนินงาน', 'Operations')} icon={FilePlus2} title={t('คำขอ', 'Request')} />
 
       <Card className="p-5 sm:p-7">
-        <SectionHeader title="สร้างคำขอ" className="mb-5" />
+        <SectionHeader title={t('สร้างคำขอ', 'Create Request')} className="mb-5" />
         <form onSubmit={submit} className="space-y-5" noValidate>
           <div className="grid gap-2 sm:grid-cols-2">
             {REQUEST_TYPES.map((type) => {
@@ -133,29 +136,29 @@ export default function RequestPage({ user }) {
                     activeType ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-600'
                   }`}
                 >
-                  {type.label}
+                  {requestType(type.value)}
                 </button>
               )
             })}
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <FormField label="Line *">
+            <FormField label={t('Line *', 'Line *')}>
               <SearchableSelect
                 value={form.line}
                 onChange={(value) => setForm((c) => ({ ...c, line: value, currentModel: '', changeModel: '' }))}
                 options={lineOptions}
-                placeholder="เลือก Line"
+                placeholder={t('เลือก Line', 'Select line')}
                 clearable
               />
             </FormField>
-            <FormField label="Request type">
+            <FormField label={t('ประเภทคำขอ', 'Request type')}>
               <NativeSelect
                 value={form.requestType}
                 onChange={(e) => setForm((c) => ({ ...c, requestType: e.target.value }))}
               >
                 {PROCESS_TYPES.map((p) => (
-                  <option key={p.value} value={p.value}>{p.label}</option>
+                  <option key={p.value} value={p.value}>{t(p.label, p.label)}</option>
                 ))}
               </NativeSelect>
             </FormField>
@@ -163,23 +166,23 @@ export default function RequestPage({ user }) {
 
           {isChangeModel ? (
             <div className="grid gap-4 sm:grid-cols-2">
-              <FormField label="Model (เดิม)">
+              <FormField label={t('Model (เดิม)', 'Model (current)')}>
                 <NativeSelect
                   value={form.currentModel}
                   onChange={(e) => setForm((c) => ({ ...c, currentModel: e.target.value }))}
                 >
-                  <option value="">เลือก Model</option>
+                  <option value="">{t('เลือก Model', 'Select model')}</option>
                   {modelOptions.map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}
                 </NativeSelect>
               </FormField>
-              <FormField label="Model (ใหม่)">
+              <FormField label={t('Model (ใหม่)', 'Model (new)')}>
                 <NativeSelect
                   value={form.changeModel}
                   onChange={(e) => setForm((c) => ({ ...c, changeModel: e.target.value }))}
                 >
-                  <option value="">เลือก Model</option>
+                  <option value="">{t('เลือก Model', 'Select model')}</option>
                   {modelOptions.map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}
@@ -191,9 +194,9 @@ export default function RequestPage({ user }) {
           {isBreakdown ? (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <p className="text-[11px] font-black text-slate-700">รายการ Fixture ที่เสีย</p>
+                <p className="text-[11px] font-black text-slate-700">{t('รายการ Fixture ที่เสีย', 'Broken fixture items')}</p>
                 <Button type="button" size="sm" variant="secondary" icon={Plus} onClick={addBreakdownItem}>
-                  เพิ่ม
+                  {t('เพิ่ม', 'Add')}
                 </Button>
               </div>
               {(form.breakdownItems || []).map((item, index) => (
@@ -201,12 +204,12 @@ export default function RequestPage({ user }) {
                   <Input
                     value={item.sn}
                     onChange={(e) => updateBreakdownItem(index, 'sn', e.target.value)}
-                    placeholder="Serial Number"
+                    placeholder={t('Serial Number', 'Serial Number')}
                   />
                   <Input
                     value={item.symptom}
                     onChange={(e) => updateBreakdownItem(index, 'symptom', e.target.value)}
-                    placeholder="อาการที่พบ"
+                    placeholder={t('อาการที่พบ', 'Symptom')}
                   />
                   <Button type="button" size="sm" variant="danger" onClick={() => removeBreakdownItem(index)}>
                     <Trash2 className="h-4 w-4" />
@@ -217,13 +220,13 @@ export default function RequestPage({ user }) {
           ) : null}
 
           {isBreakdown ? null : (
-            <FormField label="รายละเอียด">
+            <FormField label={t('รายละเอียด', 'Details')}>
               <Input value={form.desc} onChange={(e) => setForm((c) => ({ ...c, desc: e.target.value }))} />
             </FormField>
           )}
 
           <Button type="submit" icon={FilePlus2} disabled={busy}>
-            {busy ? 'กำลังสร้าง…' : 'สร้างคำขอ'}
+            {busy ? t('กำลังสร้าง…', 'Creating…') : t('สร้างคำขอ', 'Create Request')}
           </Button>
         </form>
       </Card>

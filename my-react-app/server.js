@@ -127,6 +127,7 @@ const fixtureDetailSchema = new mongoose.Schema(
       max: { type: Number, default: 0 },
       exp: String,
       storage: String,
+      usedLine: String, // Line ที่ Fixture ถูกใช้งานอยู่ (อัปเดตตอนสแกนจ่าย)
     },
     registered: personSchema,
     fixtureBase: String,
@@ -193,7 +194,12 @@ const requestSchema = new mongoose.Schema(
     verifyInfo: personSchema,
     issueDone: { type: Boolean, default: false },
     returnDone: { type: Boolean, default: false },
+    scannedIssue: { type: [String], default: [] },
     returnedItems: { type: [String], default: [] },
+    scanMatches: {
+      type: [{ sn: String, scannedSn: String, planSn: String, planIndex: Number, action: String, position: String, process: String }],
+      default: [],
+    },
   },
   { versionKey: false },
 )
@@ -891,6 +897,87 @@ app.delete(
  * return = SN ที่มีใน model เดิม แต่ไม่ใช้ใน model ใหม่ -> ต้องคืน
  * keep   = SN ที่ใช้ร่วมกันทั้งสอง model -> ใช้ต่อได้
  */
+const compareModels = async (line, from, to) => {
+  const [fromDoc, toDoc] = await Promise.all([
+    FixtureList.findOne({ line, model: from }).lean(),
+    FixtureList.findOne({ line, model: to }).lean(),
+  ])
+
+  const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase()
+
+  const collect = (doc) => {
+    const map = new Map()
+    for (const info of doc?.fixtureInfo || []) {
+      const key = norm(info.position)
+      if (!key) continue
+      if (!map.has(key)) {
+        map.set(key, {
+          position: String(info.position || '').trim(),
+          process: String(info.process || '').trim(),
+          count: 0,
+          sn: new Set(),
+        })
+      }
+      const bucket = map.get(key)
+      if (!bucket.process && info.process) bucket.process = String(info.process).trim()
+      const count = Number(info.count) || 0
+      if (count > bucket.count) bucket.count = count
+      for (const sn of info.sn || []) if (sn) bucket.sn.add(String(sn))
+    }
+    return map
+  }
+
+  const fromMap = collect(fromDoc)
+  const toMap = collect(toDoc)
+
+  const flattenSn = (map) => {
+    const out = []
+    for (const bucket of map.values()) {
+      for (const sn of bucket.sn) {
+        out.push({ sn, position: bucket.position, process: bucket.process, count: bucket.count })
+      }
+    }
+    return out
+  }
+
+  const fromItems = flattenSn(fromMap)
+  const toItems = flattenSn(toMap)
+  const fromSns = new Set(fromItems.map((item) => item.sn))
+  const toSns = new Set(toItems.map((item) => item.sn))
+
+  const byPosition = (a, b) =>
+    a.position.localeCompare(b.position, 'en') || a.sn.localeCompare(b.sn, 'en')
+
+  const issue = toItems.filter((item) => !fromSns.has(item.sn)).sort(byPosition)
+  const returnList = fromItems.filter((item) => !toSns.has(item.sn)).sort(byPosition)
+  const keep = toItems.filter((item) => fromSns.has(item.sn)).sort(byPosition)
+
+  return {
+    issue,
+    return: returnList,
+    keep,
+    total: { issue: issue.length, return: returnList.length, keep: keep.length },
+    missing: { from: !fromDoc, to: !toDoc },
+  }
+}
+
+/* Plan of fixtures that must be issued / returned for a request. */
+const scanPlanForRequest = async (request) => {
+  if (/change\s*model/i.test(String(request?.type || ''))) {
+    const to = text(request.changeModel)
+      || String(request.desc || '').split('→').slice(1).join('→').trim()
+    const from = text(request.currentModel)
+    const line = text(request.line)
+    if (!line || !from || !to) return []
+    const cmp = await compareModels(line, from, to)
+    return [
+      ...cmp.issue.map((item) => ({ ...item, action: 'issue' })),
+      ...cmp.return.map((item) => ({ ...item, action: 'return' })),
+    ]
+  }
+  return []
+}
+
 app.get(
   '/api/fixturelist/compare',
   asyncRoute(async (req, res) => {
@@ -900,72 +987,7 @@ app.get(
     if (!line || !from || !to) {
       return res.status(400).json({ success: false, message: 'ต้องระบุ line, from และ to' })
     }
-
-    const [fromDoc, toDoc] = await Promise.all([
-      FixtureList.findOne({ line, model: from }).lean(),
-      FixtureList.findOne({ line, model: to }).lean(),
-    ])
-
-    const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase()
-
-    const collect = (doc) => {
-      const map = new Map()
-      for (const info of doc?.fixtureInfo || []) {
-        const key = norm(info.position)
-        if (!key) continue
-        if (!map.has(key)) {
-          map.set(key, {
-            position: String(info.position || '').trim(),
-            process: String(info.process || '').trim(),
-            count: 0,
-            sn: new Set(),
-          })
-        }
-        const bucket = map.get(key)
-        if (!bucket.process && info.process) bucket.process = String(info.process).trim()
-        const count = Number(info.count) || 0
-        if (count > bucket.count) bucket.count = count
-        for (const sn of info.sn || []) if (sn) bucket.sn.add(String(sn))
-      }
-      return map
-    }
-
-    const fromMap = collect(fromDoc)
-    const toMap = collect(toDoc)
-
-    const flattenSn = (map) => {
-      const out = []
-      for (const bucket of map.values()) {
-        for (const sn of bucket.sn) {
-          out.push({ sn, position: bucket.position, process: bucket.process, count: bucket.count })
-        }
-      }
-      return out
-    }
-
-    const fromItems = flattenSn(fromMap)
-    const toItems = flattenSn(toMap)
-    const fromSns = new Set(fromItems.map((item) => item.sn))
-    const toSns = new Set(toItems.map((item) => item.sn))
-
-    const byPosition = (a, b) =>
-      a.position.localeCompare(b.position, 'en') || a.sn.localeCompare(b.sn, 'en')
-
-    const issue = toItems.filter((item) => !fromSns.has(item.sn)).sort(byPosition)
-    const returnList = fromItems.filter((item) => !toSns.has(item.sn)).sort(byPosition)
-    const keep = toItems.filter((item) => fromSns.has(item.sn)).sort(byPosition)
-
-    res.json({
-      success: true,
-      line,
-      from,
-      to,
-      issue,
-      return: returnList,
-      keep,
-      total: { issue: issue.length, return: returnList.length, keep: keep.length },
-      missing: { from: !fromDoc, to: !toDoc },
-    })
+    res.json({ success: true, line, from, to, ...(await compareModels(line, from, to)) })
   }),
 )
 
@@ -1062,12 +1084,12 @@ app.put(
       return res.status(409).json({ success: false, message: 'คำขอนี้ได้รับการยืนยันแล้ว' })
     }
 
-    // concurrency: one active job per user
+    // only Progress / Verify count as an active job; Hold stays assigned and can be paused alongside another job
     const empId = req.body?.user?.userId || req.body?.user?.empId
     if (empId) {
       const active = await Request.findOne({
         'acceptInfo.empId': empId,
-        status: { $in: ['Progress', 'Hold', 'IssueReturn', 'Verify'] },
+        status: { $in: ['Progress', 'Verify'] },
         request_id: { $ne: request.request_id },
       })
       if (active) {
@@ -1127,7 +1149,7 @@ app.put(
   }),
 )
 
-/* Complete (move to Issue/Return or Verify) */
+/* Complete (move to Verify) */
 app.put(
   '/api/requests/:requestId/complete',
   asyncRoute(async (req, res) => {
@@ -1136,11 +1158,7 @@ app.put(
     if (request.status !== 'Progress' && request.status !== 'Hold') {
       return res.status(409).json({ success: false, message: 'คำขอนี้ไม่สามารถ complete ได้' })
     }
-    if (request.type === 'Change Model') {
-      request.status = 'IssueReturn'
-    } else {
-      request.status = 'Verify'
-    }
+    request.status = 'Verify'
     await request.save()
     await recordHistory(
       { request_id: request.request_id, action: 'Complete', detail: `Complete คำขอ ${request.request_id}`, line: request.line, model: request.currentModel },
@@ -1150,86 +1168,267 @@ app.put(
   }),
 )
 
-/* Issue (Fixture Room Progress Fixture + ME/TE confirm recieved) */
-app.put(
-  '/api/requests/:requestId/issue',
+const scanKey = (value) => String(value || '').trim().toUpperCase()
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// Fixture base = SN without the revision suffix (-01, -02, ...)
+const fixtureBase = (value) => scanKey(value).replace(/-\d+$/, '')
+
+const scanRequestGuard = (request, user) => {
+  if (!request) return { status: 404, message: 'ไม่พบคำขอนี้' }
+  if (request.status !== 'Progress' && request.status !== 'Hold') {
+    return { status: 409, message: 'คำขอนี้ไม่สามารถสแกนได้อีก' }
+  }
+  const actor = String(user?.userId || user?.empId || '').toLowerCase()
+  const assignee = String(request.acceptInfo?.empId || '').toLowerCase()
+  if (!assignee || actor !== assignee) {
+    return { status: 403, message: 'เฉพาะช่างที่รับงานนี้เท่านั้นที่สแกนได้' }
+  }
+  return null
+}
+
+/* Plan of fixtures that must be issued / returned (red list in Complete modal). */
+app.get(
+  '/api/requests/:requestId/scan-plan',
+  asyncRoute(async (req, res) => {
+    const request = await Request.findOne({ request_id: text(req.params.requestId) }).lean()
+    if (!request) return res.status(404).json({ success: false, message: 'ไม่พบคำขอนี้' })
+    res.json({
+      success: true,
+      plan: await scanPlanForRequest(request),
+      matches: request.scanMatches || [],
+    })
+  }),
+)
+
+/* Scan one SN: auto-detect issue/return from the plan, validate it, record the
+ * match only. Fixture statuses are not changed until the user presses ตกลง. */
+app.post(
+  '/api/requests/:requestId/scan',
   asyncRoute(async (req, res) => {
     const request = await Request.findOne({ request_id: text(req.params.requestId) })
-    if (!request) return res.status(404).json({ success: false, message: 'ไม่พบคำขอนี้' })
-    if (request.status !== 'Progress' && request.status !== 'Hold' && request.status !== 'IssueReturn') {
-      return res.status(409).json({ success: false, message: 'คำขอนี้จ่ายของไปแล้ว' })
-    }
+    const blocked = scanRequestGuard(request, req.body?.user)
+    if (blocked) return res.status(blocked.status).json({ success: false, message: blocked.message })
 
-    const items = Array.isArray(req.body?.items) ? req.body.items.map(text).filter(Boolean) : []
-    if (items.length === 0) {
-      return res.status(400).json({ success: false, message: 'กรุณาเลือก Fixture ที่จะจ่าย' })
-    }
+    const raw = text(req.body?.sn)
+    if (!raw) return res.status(400).json({ success: false, message: 'กรุณาสแกน Serial Number' })
 
-    const resolvedItems = []
-    for (const sn of items) {
-      const fixture = await findFixture(sn)
-      if (!fixture) {
-        return res.status(404).json({ success: false, message: `ไม่พบ ${sn} ในระบบ` })
-      }
-      await updateFixtureBySn(sn, {
-        status: 'In Use',
-        'usage.current': (Number(fixture.usage?.current) || 0) + 1,
+    const scanValue = scanKey(raw)
+    const usedSn = new Set((request.scanMatches || []).map((item) => scanKey(item.sn)))
+    const exact = await FixtureDetail.findOne({ sn: scanValue }).lean()
+    if (!exact) {
+      // Base-only scans are rejected — the SN must be registered in fixtureDetail.
+      const base = fixtureBase(scanValue)
+      const candidates = await FixtureDetail
+        .find({ sn: { $regex: `^${escapeRegex(base)}-\\d+$` } }, { sn: 1 })
+        .lean()
+      const hint = candidates.length > 0
+        ? ` (เช่น ${candidates.slice(0, 3).map((item) => item.sn).join(', ')})`
+        : ''
+      return res.status(404).json({
+        success: false,
+        message: `ไม่พบ ${raw} ในระบบ — ต้องสแกน Serial Number ที่มีอยู่ในระบบเท่านั้น${hint}`,
       })
+    }
+
+    const fixture = await findFixture(scanValue)
+    if (!fixture) {
+      return res.status(404).json({ success: false, message: `ไม่พบ ${raw} ในระบบ` })
+    }
+    const resolvedSn = fixture.sn
+    const plan = await scanPlanForRequest(request)
+    let match
+    if (plan.length > 0) {
+      const base = fixtureBase(scanValue)
+      const usedIndexes = new Set((request.scanMatches || [])
+        .map((item) => item.planIndex)
+        .filter((value) => Number.isInteger(value)))
+      const candidates = plan
+        .map((item, index) => ({ ...item, planIndex: index }))
+        .filter((item) => fixtureBase(item.sn) === base && !usedIndexes.has(item.planIndex))
+      if (plan.some((item) => fixtureBase(item.sn) === base) && candidates.length === 0) {
+        return res.status(409).json({
+          success: false,
+          message: `base ${base} สแกนครบตามจำนวนที่ระบบคำนวณแล้ว`,
+        })
+      }
+      if (candidates.length === 0) {
+        return res.status(409).json({
+          success: false,
+          message: `${resolvedSn} ไม่ตรงกับรายการที่ต้องเบิก / คืนของคำขอนี้ (base ${base})`,
+        })
+      }
+      const wantsIssue = fixture.status === 'In Stock'
+      match = candidates.find((item) => item.action === (wantsIssue ? 'issue' : 'return'))
+        || candidates[0]
+    } else {
+      match = {
+        sn: resolvedSn,
+        position: '',
+        process: '',
+        action: fixture.status === 'In Stock' ? 'issue' : 'return',
+      }
+    }
+
+    if (usedSn.has(scanKey(resolvedSn))) {
+      return res.status(409).json({ success: false, message: `${resolvedSn} ถูกสแกนไปแล้ว` })
+    }
+    if (match.action === 'issue' && fixture.status !== 'In Stock') {
+      return res.status(409).json({
+        success: false,
+        message: `${resolvedSn} อยู่ในสถานะ ${fixture.status} (ต้องเป็น In Stock ก่อนจ่าย)`,
+        fixture,
+      })
+    }
+    if (match.action === 'return' && fixture.status === 'In Stock') {
+      return res.status(409).json({
+        success: false,
+        message: `${resolvedSn} อยู่ใน Stock อยู่แล้ว (ไม่ใช่ Fixture ที่ต้องคืน)`,
+        fixture,
+      })
+    }
+
+    const matchRecord = {
+      sn: scanKey(resolvedSn),
+      scannedSn: scanKey(raw),
+      planSn: scanKey(match.sn),
+      planIndex: match.planIndex,
+      action: match.action,
+      position: match.position || '',
+      process: match.process || '',
+    }
+    request.scanMatches = [...(request.scanMatches || []), matchRecord]
+    await request.save()
+
+    return res.json({
+      success: true,
+      match: matchRecord,
+      request,
+      message: `${resolvedSn} ตรงกับรายการ ${match.action === 'issue' ? 'เบิก / จ่าย' : 'รับคืน'}`,
+    })
+  }),
+)
+
+/* ตกลง: apply every matched fixture + move the request to Verify. */
+app.post(
+  '/api/requests/:requestId/confirm-scan',
+  asyncRoute(async (req, res) => {
+    const request = await Request.findOne({ request_id: text(req.params.requestId) })
+    const blocked = scanRequestGuard(request, req.body?.user)
+    if (blocked) return res.status(blocked.status).json({ success: false, message: blocked.message })
+
+    const matches = request.scanMatches || []
+    if (matches.length === 0) {
+      return res.status(400).json({ success: false, message: 'ยังไม่มี Fixture ที่สแกนตรงกัน' })
+    }
+
+    const plan = await scanPlanForRequest(request)
+    if (plan.length > 0) {
+      const usedIndexes = new Set(matches
+        .map((match) => match.planIndex)
+        .filter((value) => Number.isInteger(value)))
+      const remaining = matches
+        .filter((match) => !Number.isInteger(match.planIndex))
+        .map((match) => scanKey(match.planSn || match.sn))
+      const missing = plan.filter((item, index) => {
+        if (usedIndexes.has(index)) return false
+        const key = scanKey(item.sn)
+        const exact = remaining.indexOf(key)
+        if (exact >= 0) {
+          remaining.splice(exact, 1)
+          return false
+        }
+        const byBase = remaining.findIndex((value) => fixtureBase(value) === fixtureBase(item.sn))
+        if (byBase >= 0) {
+          remaining.splice(byBase, 1)
+          return false
+        }
+        return true
+      })
+      if (missing.length > 0) {
+        const sample = missing.slice(0, 3).map((item) => item.sn).join(', ')
+        return res.status(409).json({
+          success: false,
+          message: `สแกนไม่ครบ — ยังขาด ${missing.length} ตัว (${sample}${missing.length > 3 ? ' …' : ''})`,
+        })
+      }
+    } else if (!matches.some((match) => match.action === 'issue')
+      || !matches.some((match) => match.action === 'return')) {
+      return res.status(409).json({
+        success: false,
+        message: 'ต้องสแกนทั้งรายการจ่ายและรับคืนก่อนกดตกลง',
+      })
+    }
+
+    const items = []
+    for (const match of matches) {
+      const fixture = await findFixture(match.sn)
+      if (!fixture) {
+        return res.status(404).json({ success: false, message: `ไม่พบ ${match.sn} ในระบบ` })
+      }
+      if (match.action === 'issue' && fixture.status !== 'In Stock') {
+        return res.status(409).json({
+          success: false,
+          message: `${fixture.sn} อยู่ในสถานะ ${fixture.status} (ต้องเป็น In Stock ก่อนจ่าย)`,
+        })
+      }
+      if (match.action === 'return' && fixture.status === 'In Stock') {
+        return res.status(409).json({
+          success: false,
+          message: `${fixture.sn} อยู่ใน Stock อยู่แล้ว`,
+        })
+      }
+      items.push({ match, fixture })
+    }
+
+    for (const { match, fixture } of items) {
+      if (match.action === 'issue') {
+        const modelForUse = request.type === 'Change Model'
+          ? (request.changeModel || request.currentModel || '')
+          : (request.currentModel || '')
+        await updateFixtureBySn(fixture.sn, {
+          status: 'In Use',
+          'usage.current': (Number(fixture.usage?.current) || 0) + 1,
+          'usage.usedLine': request.line || '',
+          'usage.currentModel': modelForUse,
+          'usage.changeModel': request.type === 'Change Model' ? (request.changeModel || '') : '',
+        })
+      } else {
+        await updateFixtureBySn(fixture.sn, {
+          status: 'In Stock',
+          'usage.current': 0,
+          'usage.currentModel': '',
+          'usage.changeModel': '',
+          'usage.usedLine': '',
+        })
+      }
       await recordHistory(
         {
           sn: fixture.sn,
           request_id: request.request_id,
-          action: 'Issue',
-          detail: `จ่ายตามคำขอ ${request.request_id} (${request.type})`,
+          action: match.action === 'issue' ? 'Issue (Scan)' : 'Return (Scan)',
+          detail: match.action === 'issue'
+            ? `สแกนจ่าย ${fixture.sn} → ใช้ที่ ${request.line || '-'}`
+            : `สแกนรับคืน ${fixture.sn} → In Stock`,
           line: request.line,
           model: request.currentModel,
         },
         req.body?.user,
       )
-      resolvedItems.push(fixture.sn)
     }
 
-    request.items = resolvedItems
-    request.issueInfo = personFrom(req.body?.user || {})
+    request.scannedIssue = items.filter((item) => item.match.action === 'issue').map((item) => item.fixture.sn)
+    request.returnedItems = items.filter((item) => item.match.action === 'return').map((item) => item.fixture.sn)
     request.issueDone = true
-    if (request.returnDone) request.status = 'Verify'
-    else request.status = 'IssueReturn'
-    await request.save()
-
-    return res.json({ success: true, request })
-  }),
-)
-
-/* Return (request-level: return old fixtures) */
-app.put(
-  '/api/requests/:requestId/return',
-  asyncRoute(async (req, res) => {
-    const request = await Request.findOne({ request_id: text(req.params.requestId) })
-    if (!request) return res.status(404).json({ success: false, message: 'ไม่พบคำขอนี้' })
-    if (request.status !== 'IssueReturn' && request.status !== 'Progress') {
-      return res.status(409).json({ success: false, message: 'คำขอนี้ไม่สามารถ return ได้' })
-    }
-    const items = Array.isArray(req.body?.items) ? req.body.items.map(text).filter(Boolean) : []
-    if (items.length === 0) {
-      return res.status(400).json({ success: false, message: 'กรุณาเลือก Fixture ที่จะคืน' })
-    }
-    for (const sn of items) {
-      const fixture = await findFixture(sn)
-      if (!fixture) {
-        return res.status(404).json({ success: false, message: `ไม่พบ ${sn} ในระบบ` })
-      }
-      await updateFixtureBySn(sn, { status: 'In Stock', 'usage.currentModel': '', 'usage.changeModel': '' })
-      await recordHistory(
-        { sn: fixture.sn, request_id: request.request_id, action: 'Return', detail: `คืนตามคำขอ ${request.request_id}`, line: request.line, model: request.currentModel },
-        req.body?.user,
-      )
-    }
-    request.returnedItems = items
     request.returnDone = true
-    if (request.issueDone) request.status = 'Verify'
-    else request.status = 'IssueReturn'
+    request.issueInfo = personFrom(req.body?.user || {})
+    request.status = 'Verify'
     await request.save()
-    return res.json({ success: true, request })
+
+    return res.json({
+      success: true,
+      request,
+      message: `อัปเดต ${items.length} ตัวสำเร็จ — ${request.request_id} พร้อมให้เจ้าของคำขอ Verify`,
+    })
   }),
 )
 
@@ -1242,7 +1441,7 @@ app.put(
     if (request.type !== 'Breakdown') {
       return res.status(400).json({ success: false, message: 'ใช้กับคำขอ Breakdown เท่านั้น' })
     }
-    if (request.status !== 'Progress' && request.status !== 'Hold' && request.status !== 'IssueReturn') {
+    if (request.status !== 'Progress' && request.status !== 'Hold') {
       return res.status(409).json({ success: false, message: 'คำขอนี้ดำเนินการไปแล้ว' })
     }
 
@@ -1323,6 +1522,12 @@ app.put(
     if (!request) return res.status(404).json({ success: false, message: 'ไม่พบคำขอนี้' })
     if (request.status !== 'Verify') {
       return res.status(409).json({ success: false, message: 'คำขอนี้ยังไม่พร้อม verify' })
+    }
+
+    const actor = String(req.body?.user?.userId || req.body?.user?.empId || '').toLowerCase()
+    const owner = String(request.requestInfo?.empId || '').toLowerCase()
+    if (owner && actor !== owner) {
+      return res.status(403).json({ success: false, message: 'มีเพียงผู้ขอ (Requestor) เท่านั้นที่ Verify ได้' })
     }
 
     for (const sn of request.items || []) {

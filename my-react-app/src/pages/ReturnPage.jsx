@@ -8,8 +8,11 @@ import {
 import { Input } from '../components/ui/Field'
 import Button from '../components/ui/Button'
 import { useToast } from '../components/ui/Toast'
+import { useLabels, useServerMessage } from '../lib/i18n'
 
 export default function ReturnPage({ user }) {
+  const { t } = useLabels()
+  const sm = useServerMessage()
   const toast = useToast()
   const [scan, setScan] = useState('')
   const [scanning, setScanning] = useState(false)
@@ -30,17 +33,17 @@ export default function ReturnPage({ user }) {
       const data = await api.fixture(sn)
       const fixture = data.fixture
       if (fixture.status !== 'In Use' && fixture.status !== 'Maintenance') {
-        toast.error(`${sn} ไม่ได้อยู่ในสถานะ In Use/Maintenance`)
+        toast.error(t(`${sn} ไม่ได้อยู่ในสถานะ In Use/Maintenance`, `${sn} is not in In Use/Maintenance status`))
         return
       }
       if (stock.some((x) => x.sn === sn) || pm.some((x) => x.sn === sn)) {
-        toast.error(`${sn} อยู่ในลิสแล้ว`)
+        toast.error(t(`${sn} อยู่ในลิสแล้ว`, `${sn} is already in the list`))
         return
       }
       setStock((prev) => [fixture, ...prev])
       setScan('')
     } catch (err) {
-      toast.error(err.status === 404 ? `ไม่พบ ${sn}` : err.message)
+      toast.error(err.status === 404 ? t(`ไม่พบ ${sn}`, `${sn} not found`) : sm(err.message))
     } finally {
       setScanning(false)
       scanRef.current?.focus()
@@ -84,11 +87,11 @@ export default function ReturnPage({ user }) {
       for (const item of pm) {
         await api.returnFixture({ sn: item.sn, target: 'Maintenance', user })
       }
-      toast.success('รับคืนสำเร็จ')
+      toast.success(t('รับคืนสำเร็จ', 'Return successful'))
       setStock([])
       setPm([])
     } catch (err) {
-      toast.error(err.message)
+      toast.error(sm(err.message))
     } finally {
       setBusy(false)
     }
@@ -96,7 +99,7 @@ export default function ReturnPage({ user }) {
 
   return (
     <div className="space-y-4">
-      <PageHeader eyebrow="Operations" icon={Undo2} title="Return" />
+      <PageHeader eyebrow={t('การดำเนินงาน', 'Operations')} icon={Undo2} title={t('คืน', 'Return')} />
 
       <Card className="p-4">
         <div className="flex items-center gap-2">
@@ -104,7 +107,7 @@ export default function ReturnPage({ user }) {
           <Input
             ref={scanRef}
             className="field-input-sm font-mono"
-            placeholder="สแกนบาร์โค้ด SN…"
+            placeholder={t('สแกนบาร์โค้ด SN…', 'Scan SN barcode…')}
             value={scan}
             onChange={(e) => setScan(e.target.value)}
             onKeyDown={(e) => {
@@ -120,9 +123,9 @@ export default function ReturnPage({ user }) {
 
       <div className="grid gap-4 xl:grid-cols-2">
         <Card className="p-4">
-          <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">คืนคลัง</p>
+          <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">{t('คืนคลัง', 'Return to stock')}</p>
           <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => onDrop(e, 'stock')} className="min-h-[200px] space-y-2 rounded-xl border-2 border-dashed border-slate-200 p-2">
-            {stock.length === 0 ? <p className="py-6 text-center text-[11px] text-slate-400">ว่าง</p> : stock.map((item) => (
+            {stock.length === 0 ? <p className="py-6 text-center text-[11px] text-slate-400">{t('ว่าง', 'Empty')}</p> : stock.map((item) => (
               <div key={item.sn} draggable onDragStart={(e) => onDragStart(e, item.sn, 'stock')} className="cursor-grab rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-700 shadow-sm active:cursor-grabbing">
                 <span className="font-mono">{item.sn}</span>
                 <span className="ml-2 text-slate-400">{item.line} · {item.model}</span>
@@ -131,9 +134,9 @@ export default function ReturnPage({ user }) {
           </div>
         </Card>
         <Card className="p-4">
-          <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">PM & maintenance</p>
+          <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">{t('PM และซ่อมบำรุง', 'PM & Maintenance')}</p>
           <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => onDrop(e, 'pm')} className="min-h-[200px] space-y-2 rounded-xl border-2 border-dashed border-slate-200 p-2">
-            {pm.length === 0 ? <p className="py-6 text-center text-[11px] text-slate-400">ว่าง</p> : pm.map((item) => (
+            {pm.length === 0 ? <p className="py-6 text-center text-[11px] text-slate-400">{t('ว่าง', 'Empty')}</p> : pm.map((item) => (
               <div key={item.sn} draggable onDragStart={(e) => onDragStart(e, item.sn, 'pm')} className="cursor-grab rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-700 shadow-sm active:cursor-grabbing">
                 <span className="font-mono">{item.sn}</span>
                 <span className="ml-2 text-slate-400">{item.line} · {item.model}</span>
@@ -145,7 +148,7 @@ export default function ReturnPage({ user }) {
 
       <div className="flex justify-end">
         <Button onClick={confirm} disabled={busy || (stock.length === 0 && pm.length === 0)}>
-          {busy ? 'กำลังบันทึก…' : 'ยืนยันรับคืน'}
+          {busy ? t('กำลังบันทึก…', 'Saving…') : t('ยืนยันรับคืน', 'Confirm Return')}
         </Button>
       </div>
     </div>

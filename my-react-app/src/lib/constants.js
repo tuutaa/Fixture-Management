@@ -62,7 +62,7 @@ export const FIXTURE_STATUS_TONE = {
 }
 
 /* Request status: Waiting -> Accepted -> Issued -> Done */
-export const REQUEST_STATUSES = ['Waiting', 'Progress', 'Hold', 'IssueReturn', 'Verify', 'Done']
+export const REQUEST_STATUSES = ['Waiting', 'Progress', 'Hold', 'Verify', 'Done']
 
 export const REQUEST_STATUS_TONE = {
   Waiting: {
@@ -79,11 +79,6 @@ export const REQUEST_STATUS_TONE = {
     label: 'Hold',
     chip: 'bg-yellow-50 text-yellow-700 ring-yellow-600/10',
     dot: 'bg-yellow-500',
-  },
-  IssueReturn: {
-    label: 'Issue / Return',
-    chip: 'bg-purple-50 text-purple-700 ring-purple-600/10',
-    dot: 'bg-purple-500',
   },
   Verify: {
     label: 'Verify',

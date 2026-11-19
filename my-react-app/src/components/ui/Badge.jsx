@@ -1,5 +1,7 @@
 import { cn } from '../../lib/format'
 import { fixtureTone, requestTone } from '../../lib/constants'
+import { useLanguage } from '../../context/LanguageContext'
+import { useLabels } from '../../lib/i18n'
 
 export function Badge({ tone = 'slate', children, dot = false, className }) {
   const tones = {
@@ -35,6 +37,8 @@ export function Badge({ tone = 'slate', children, dot = false, className }) {
 }
 
 export function FixtureStatusBadge({ status, className }) {
+  const { t } = useLanguage()
+  const { fixtureStatus } = useLabels()
   const tone = fixtureTone(status)
   return (
     <span
@@ -45,12 +49,14 @@ export function FixtureStatusBadge({ status, className }) {
       )}
     >
       <span className={cn('h-1.5 w-1.5 rounded-full', tone.dot)} />
-      {tone.label}
+      {status ? fixtureStatus(status) : t('ไม่ทราบ', 'Unknown')}
     </span>
   )
 }
 
 export function RequestStatusBadge({ status, className }) {
+  const { t } = useLanguage()
+  const { requestStatus } = useLabels()
   const tone = requestTone(status)
   return (
     <span
@@ -61,7 +67,7 @@ export function RequestStatusBadge({ status, className }) {
       )}
     >
       <span className={cn('h-1.5 w-1.5 rounded-full', tone.dot)} />
-      {tone.label}
+      {status ? requestStatus(status) : t('ไม่ทราบ', 'Unknown')}
     </span>
   )
 }

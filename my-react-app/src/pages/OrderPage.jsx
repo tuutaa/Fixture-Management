@@ -5,9 +5,12 @@ import {
   ClipboardList,
   Info,
   PackagePlus,
+  ScanLine,
   Undo2,
+  Wrench,
 } from 'lucide-react'
 import api from '../lib/api'
+import OrderScanModal from '../components/OrderScanModal'
 import {
   Card,
   EmptyState,
@@ -20,21 +23,12 @@ import Modal from '../components/ui/Modal'
 import { Input } from '../components/ui/Field'
 import { useToast } from '../components/ui/Toast'
 import { formatDateTime } from '../lib/format'
-
-const FILTERS = [
-  { value: '', label: 'All', variant: 'slate' },
-  { value: 'Waiting', label: 'Waiting', variant: 'danger' },
-  { value: 'Progress', label: 'Progress', variant: 'primary' },
-  { value: 'Hold', label: 'Hold', variant: 'warning' },
-  { value: 'IssueReturn', label: 'Issue / Return', variant: 'purple' },
-  { value: 'Verify', label: 'Verify', variant: 'success' },
-]
+import { useLabels, useServerMessage } from '../lib/i18n'
 
 const STATUS_TONE = {
   Waiting: 'red',
   Progress: 'blue',
   Hold: 'orange',
-  IssueReturn: 'purple',
   Verify: 'emerald',
   Done: 'emerald',
 }
@@ -50,6 +44,12 @@ const resolveChangeModel = (request) => {
 
 const isChangeModel = (request) => /change\s*model/i.test(String(request?.type || ''))
 const isBreakdown = (request) => /breakdown/i.test(String(request?.type || ''))
+
+const isRequestor = (request, user) => {
+  const owner = String(request?.requestInfo?.empId || '').toLowerCase()
+  const actor = String(user?.userId || user?.empId || '').toLowerCase()
+  return Boolean(owner && owner === actor)
+}
 
 const personLabel = (person) => {
   if (!person) return '-'
@@ -68,27 +68,11 @@ const STATUS_STYLE = {
   Waiting: { bg: 'bg-red-50', badge: 'bg-red-600', label: 'WAITING' },
   Progress: { bg: 'bg-blue-50', badge: 'bg-blue-600', label: 'PROGRESS' },
   Hold: { bg: 'bg-orange-50', badge: 'bg-orange-500', label: 'HOLD' },
-  IssueReturn: { bg: 'bg-purple-50', badge: 'bg-purple-600', label: 'ISSUE/RETURN' },
   Verify: { bg: 'bg-emerald-50', badge: 'bg-emerald-600', label: 'VERIFY' },
   Done: { bg: 'bg-emerald-50', badge: 'bg-emerald-600', label: 'DONE' },
 }
 
-const ACTION_META = {
-  complete: { label: 'Complete', hint: 'ยืนยันการทำงานเสร็จ (Complete)' },
-  hold: { label: 'Hold', hint: 'ยืนยันการพักงาน (Hold)' },
-  reject: { label: 'Reject', hint: 'ยืนยันการปฏิเสธงาน (Reject)' },
-  issue: { label: 'Issue', hint: 'ยืนยันการเบิก Fixture (Issue)' },
-  return: { label: 'Return', hint: 'ยืนยันการคืน Fixture (Return)' },
-  verify: { label: 'Verify', hint: 'ยืนยันผลงาน (Verify)' },
-}
-
-const CHANGE_GROUPS = [
-  { key: 'issue', title: 'ต้องเตรียม / เบิกใหม่', tone: 'blue', icon: PackagePlus },
-  { key: 'keep', title: 'ใช้ต่อได้', tone: 'emerald', icon: CheckCircle2 },
-  { key: 'return', title: 'ต้องคืน', tone: 'red', icon: Undo2 },
-]
-
-const ChangeGroup = ({ title, tone, items, icon: Icon }) => {
+const ChangeGroup = ({ title, tone, items, icon: Icon, t }) => {
   const tones = {
     blue: 'border-blue-200 bg-blue-50/50 text-blue-700',
     emerald: 'border-emerald-200 bg-emerald-50/50 text-emerald-700',
@@ -107,7 +91,7 @@ const ChangeGroup = ({ title, tone, items, icon: Icon }) => {
         </span>
       </div>
       {items.length === 0 ? (
-        <p className="px-3 py-3 text-[11px] font-medium text-slate-400">ไม่มีรายการ</p>
+        <p className="px-3 py-3 text-[11px] font-medium text-slate-400">{t('ไม่มีรายการ', 'No items')}</p>
       ) : (
         <div className="max-h-64 overflow-auto bg-white/85">
           <table className="w-full border-collapse text-left">
@@ -130,18 +114,16 @@ const ChangeGroup = ({ title, tone, items, icon: Icon }) => {
   )
 }
 
-const ACTION_PEOPLE = [
-  { key: 'requestInfo', label: 'ผู้ขอ (Request)', dot: 'bg-slate-400' },
-  { key: 'acceptInfo', label: 'ผู้รับงาน (Accept)', dot: 'bg-blue-500' },
-  { key: 'issueInfo', label: 'ผู้เบิก / จ่าย (Issue)', dot: 'bg-purple-500' },
-  { key: 'verifyInfo', label: 'ผู้ตรวจสอบ (Verify)', dot: 'bg-emerald-500' },
-]
-
-const CompareBlock = ({ loading, error, compare }) => {
+const CompareBlock = ({ loading, error, compare, t }) => {
+  const changeGroups = [
+    { key: 'issue', title: t('ต้องเตรียม / เบิกใหม่', 'Prepare / Issue new'), tone: 'blue', icon: PackagePlus },
+    { key: 'keep', title: t('ใช้ต่อได้', 'Can continue using'), tone: 'emerald', icon: CheckCircle2 },
+    { key: 'return', title: t('ต้องคืน', 'Must return'), tone: 'red', icon: Undo2 },
+  ]
   if (loading) {
     return (
       <div className="rounded-2xl border border-slate-200 bg-white py-8">
-        <Spinner />
+        <Spinner label={t('กำลังโหลดข้อมูล…', 'Loading…')} />
       </div>
     )
   }
@@ -155,13 +137,14 @@ const CompareBlock = ({ loading, error, compare }) => {
   if (!compare) return null
   return (
     <div className="grid gap-3 sm:grid-cols-3">
-      {CHANGE_GROUPS.map((group) => (
+      {changeGroups.map((group) => (
         <ChangeGroup
           key={group.key}
           title={group.title}
           tone={group.tone}
           icon={group.icon}
           items={compare[group.key] || []}
+          t={t}
         />
       ))}
     </div>
@@ -181,10 +164,34 @@ export default function OrderPage({ user }) {
   const [actionModal, setActionModal] = useState(null)
   const [actionPassword, setActionPassword] = useState('')
   const [actionBusy, setActionBusy] = useState(false)
+  const [scanRequest, setScanRequest] = useState(null)
   const [compare, setCompare] = useState(null)
   const [compareLoading, setCompareLoading] = useState(false)
   const [compareError, setCompareError] = useState('')
   const [busyId, setBusyId] = useState('')
+  const { t, requestStatus, requestType } = useLabels()
+  const sm = useServerMessage()
+
+  const FILTERS = [
+    { value: '', label: t('ทั้งหมด', 'All'), variant: 'slate' },
+    { value: 'Waiting', label: requestStatus('Waiting'), variant: 'danger' },
+    { value: 'Progress', label: requestStatus('Progress'), variant: 'primary' },
+    { value: 'Hold', label: requestStatus('Hold'), variant: 'warning' },
+    { value: 'Verify', label: requestStatus('Verify'), variant: 'success' },
+  ]
+
+  const ACTION_META = {
+    hold: { label: t('พักงาน', 'Hold'), hint: t('ยืนยันการพักงาน (Hold)', 'Confirm hold (Hold)') },
+    reject: { label: t('ปฏิเสธ', 'Reject'), hint: t('ยืนยันการปฏิเสธงาน (Reject)', 'Confirm reject (Reject)') },
+    verify: { label: t('ตรวจสอบ', 'Verify'), hint: t('ยืนยันผลงาน (Verify)', 'Confirm verify (Verify)') },
+  }
+
+  const ACTION_PEOPLE = [
+    { key: 'requestInfo', label: t('ผู้ขอ (Request)', 'Requester'), dot: 'bg-slate-400' },
+    { key: 'acceptInfo', label: t('ผู้รับงาน (Accept)', 'Assignee (Accept)'), dot: 'bg-blue-500' },
+    { key: 'issueInfo', label: t('ผู้ดำเนินการ (Tech)', 'Technician (Tech)'), dot: 'bg-purple-500' },
+    { key: 'verifyInfo', label: t('ผู้ตรวจสอบ (Verify)', 'Verifier (Verify)'), dot: 'bg-emerald-500' },
+  ]
 
   const load = useCallback(async () => {
     try {
@@ -241,22 +248,22 @@ export default function OrderPage({ user }) {
 
   const handleAccept = async (request) => {
     if (!acceptPassword) {
-      toast.error('กรุณากรอกรหัสผ่าน')
+      toast.error(t('กรุณากรอกรหัสผ่าน', 'Please enter the password'))
       return
     }
     setAcceptBusy(true)
     try {
       const loginRes = await api.login({ empId: user?.userId || user?.empId, pass: acceptPassword })
       if (!loginRes?.success) {
-        toast.error('รหัสผ่านไม่ถูกต้อง')
+        toast.error(t('รหัสผ่านไม่ถูกต้อง', 'Incorrect password'))
         return
       }
       await api.acceptRequest(request.request_id, user)
-      toast.success('รับงานสำเร็จ')
+      toast.success(t('รับงานสำเร็จ', 'Accepted successfully'))
       closeAcceptModal()
       await reloadRows()
     } catch (err) {
-      toast.error(err.message)
+      toast.error(sm(err.message))
     } finally {
       setAcceptBusy(false)
     }
@@ -266,11 +273,11 @@ export default function OrderPage({ user }) {
     setBusyId(request.request_id)
     try {
       await api.holdRequest(request.request_id, user)
-      toast.success('Hold สำเร็จ')
+      toast.success(t('Hold สำเร็จ', 'Hold successful'))
       await reloadRows()
       return true
     } catch (err) {
-      toast.error(err.message)
+      toast.error(sm(err.message))
       return false
     } finally {
       setBusyId('')
@@ -281,72 +288,11 @@ export default function OrderPage({ user }) {
     setBusyId(request.request_id)
     try {
       await api.rejectRequest(request.request_id, user)
-      toast.success('Reject สำเร็จ')
+      toast.success(t('Reject สำเร็จ', 'Reject successful'))
       await reloadRows()
       return true
     } catch (err) {
-      toast.error(err.message)
-      return false
-    } finally {
-      setBusyId('')
-    }
-  }
-
-  const handleComplete = async (request) => {
-    setBusyId(request.request_id)
-    try {
-      await api.completeRequest(request.request_id, user)
-      toast.success('Complete สำเร็จ')
-      await reloadRows()
-      return true
-    } catch (err) {
-      toast.error(err.message)
-      return false
-    } finally {
-      setBusyId('')
-    }
-  }
-
-  const handleIssue = async (request) => {
-    setBusyId(request.request_id)
-    try {
-      let items = []
-      if (isChangeModel(request)) {
-        const from = String(request.currentModel || '').trim()
-        const to = resolveChangeModel(request)
-        const line = String(request.line || '').trim()
-        const data = await api.compareFixtureList({ line, from, to })
-        items = (data?.issue || []).map((x) => x.sn).filter(Boolean)
-      }
-      await api.issueRequest(request.request_id, items.length ? items : [], user)
-      toast.success('Issue สำเร็จ')
-      await reloadRows()
-      return true
-    } catch (err) {
-      toast.error(err.message)
-      return false
-    } finally {
-      setBusyId('')
-    }
-  }
-
-  const handleReturn = async (request) => {
-    setBusyId(request.request_id)
-    try {
-      let items = []
-      if (isChangeModel(request)) {
-        const from = String(request.currentModel || '').trim()
-        const to = resolveChangeModel(request)
-        const line = String(request.line || '').trim()
-        const data = await api.compareFixtureList({ line, from, to })
-        items = (data?.return || []).map((x) => x.sn).filter(Boolean)
-      }
-      await api.returnRequest(request.request_id, items.length ? items : [], user)
-      toast.success('Return สำเร็จ')
-      await reloadRows()
-      return true
-    } catch (err) {
-      toast.error(err.message)
+      toast.error(sm(err.message))
       return false
     } finally {
       setBusyId('')
@@ -357,11 +303,11 @@ export default function OrderPage({ user }) {
     setBusyId(request.request_id)
     try {
       await api.verifyRequest(request.request_id, user)
-      toast.success('Verify สำเร็จ')
+      toast.success(t('Verify สำเร็จ', 'Verify successful'))
       await reloadRows()
       return true
     } catch (err) {
-      toast.error(err.message)
+      toast.error(sm(err.message))
       return false
     } finally {
       setBusyId('')
@@ -371,22 +317,19 @@ export default function OrderPage({ user }) {
   const confirmAction = async () => {
     if (!actionModal) return
     if (!actionPassword) {
-      toast.error('กรุณากรอกรหัสผ่าน')
+      toast.error(t('กรุณากรอกรหัสผ่าน', 'Please enter the password'))
       return
     }
     setActionBusy(true)
     try {
       const loginRes = await api.login({ empId: user?.userId || user?.empId, pass: actionPassword })
       if (!loginRes?.success) {
-        toast.error('รหัสผ่านไม่ถูกต้อง')
+        toast.error(t('รหัสผ่านไม่ถูกต้อง', 'Incorrect password'))
         return
       }
       const runners = {
-        complete: handleComplete,
         hold: handleHold,
         reject: handleReject,
-        issue: handleIssue,
-        return: handleReturn,
         verify: handleVerify,
       }
       const runner = runners[actionModal.action]
@@ -394,7 +337,7 @@ export default function OrderPage({ user }) {
       const ok = await runner(actionModal.request)
       if (ok) closeActionModal()
     } catch (err) {
-      toast.error(err.message)
+      toast.error(sm(err.message))
     } finally {
       setActionBusy(false)
     }
@@ -428,7 +371,7 @@ export default function OrderPage({ user }) {
 
   return (
     <div className="space-y-4">
-      <PageHeader eyebrow="Operations" icon={ClipboardList} title="Order" />
+      <PageHeader eyebrow={t('การดำเนินงาน', 'Operations')} icon={ClipboardList} title={t('ออเดอร์', 'Order')} />
 
       <div className="flex flex-wrap gap-2">
         {FILTERS.map((f) => (
@@ -445,15 +388,15 @@ export default function OrderPage({ user }) {
 
       {loading ? (
         <Card>
-          <Spinner />
+          <Spinner label={t('กำลังโหลดข้อมูล…', 'Loading…')} />
         </Card>
       ) : error ? (
         <Card>
-          <ErrorState message={error} onRetry={load} />
+          <ErrorState message={sm(error)} onRetry={load} />
         </Card>
       ) : filtered.length === 0 ? (
         <Card>
-          <EmptyState title="ไม่มี Request" />
+          <EmptyState title={t('ไม่มีคำขอ', 'No requests')} />
         </Card>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
@@ -461,6 +404,9 @@ export default function OrderPage({ user }) {
             const busy = busyId === r.request_id
             const status = r.status
             const style = STATUS_STYLE[status] || { bg: 'bg-white', badge: 'bg-slate-600', label: status || 'Unknown' }
+            const statusLabel = STATUS_STYLE[status]
+              ? requestStatus(status)
+              : (status || t('ไม่ทราบ', 'Unknown'))
             const changeModel = resolveChangeModel(r)
             return (
               <div
@@ -471,12 +417,12 @@ export default function OrderPage({ user }) {
                 <div className="p-4 border-b border-slate-50 bg-slate-50/30">
                   <div className="flex justify-between items-start mb-2">
                     <span className={`px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest shadow-md ${style.badge} text-white`}>
-                      {style.label}
+                      {statusLabel}
                     </span>
                     <span className="text-[10px] font-mono text-slate-400 font-bold">{r.request_id}</span>
                   </div>
                   <h3 className="text-lg font-extrabold text-slate-800 leading-tight break-words">
-                    {r.type}
+                    {requestType(r.type)}
                   </h3>
                   <div className="mt-2 flex flex-wrap items-center gap-x-2 leading-tight min-w-0">
                     <p className="text-lg font-extrabold text-slate-900 break-words">{r.line}</p>
@@ -485,14 +431,20 @@ export default function OrderPage({ user }) {
 
                 {/* Body */}
                 <div className="p-4 flex-1 flex flex-col justify-start space-y-3">
-                  <div className="flex justify-between items-center">
-                    <span className="request-type-badge text-[10px] font-bold text-slate-500 uppercase">
-                      {r.type}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-black uppercase tracking-wide ${
+                      isChangeModel(r) ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'
+                    }`}>
+                      {isChangeModel(r) ? <ArrowRight className="h-3 w-3" /> : <Wrench className="h-3 w-3" />}
+                      {requestType(isChangeModel(r) ? 'Change Model' : 'Breakdown')}
+                    </span>
+                    <span className="request-type-badge text-[10px] font-bold text-slate-400 uppercase">
+                      {r.requestType ? requestType(r.requestType) : ''}
                     </span>
                   </div>
 
                   <div className={`p-3 rounded-xl border flex-1 min-h-[60px] shadow-inner transition-colors ${style.bg}`}>
-                    <p className="text-slate-500 font-bold uppercase mb-1 tracking-tighter text-[11px]">DESCRIPTION</p>
+                    <p className="text-slate-500 font-bold uppercase mb-1 tracking-tighter text-[11px]">{t('คำอธิบาย', 'Description')}</p>
                     {isBreakdown(r) && Array.isArray(r.breakdownItems) && r.breakdownItems.length > 0 ? (
                       <div className="space-y-1">
                         {r.breakdownItems.map((it, i) => (
@@ -513,14 +465,27 @@ export default function OrderPage({ user }) {
                     ) : null}
                   </div>
 
+                  {status === 'Progress' || status === 'Verify' ? (
+                    <div className="flex flex-wrap gap-1.5 text-[10px] font-bold">
+                      <span className={`rounded-lg px-2 py-1 ${r.issueDone ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                        {r.issueDone ? <CheckCircle2 className="mr-1 inline h-3 w-3" /> : null}
+                        {t('จ่าย', 'Issue')} {Array.isArray(r.scannedIssue) ? r.scannedIssue.length : 0}
+                      </span>
+                      <span className={`rounded-lg px-2 py-1 ${r.returnDone ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                        {r.returnDone ? <CheckCircle2 className="mr-1 inline h-3 w-3" /> : null}
+                        {t('รับคืน', 'Return')} {Array.isArray(r.returnedItems) ? r.returnedItems.length : 0}
+                      </span>
+                    </div>
+                  ) : null}
+
                   <div className="flex justify-between items-center text-[11px]">
                     <div>
-                      <p className="text-slate-400 font-bold uppercase text-[9px]">REQUESTOR</p>
+                      <p className="text-slate-400 font-bold uppercase text-[9px]">{t('ผู้ขอ', 'Requester')}</p>
                       <p className="font-semibold text-slate-700">{personLabel(r.requestInfo)}</p>
                     </div>
                     {(r.acceptInfo || r.issueInfo) ? (
                       <div>
-                        <p className="text-slate-400 font-bold uppercase text-[9px]">TECHNICIAN</p>
+                        <p className="text-slate-400 font-bold uppercase text-[9px]">{t('ช่างที่รับงาน', 'Assignee')}</p>
                         <p className="font-semibold text-slate-700">
                           {personLabel(r.issueInfo || r.acceptInfo)}
                         </p>
@@ -538,7 +503,7 @@ export default function OrderPage({ user }) {
                       className="h-9 w-full"
                       onClick={() => setDetail(r)}
                     >
-                      <Info className="h-3.5 w-3.5" /> Information
+                      <Info className="h-3.5 w-3.5" /> {t('รายละเอียด', 'Information')}
                     </Button>
                   </div>
 
@@ -552,7 +517,7 @@ export default function OrderPage({ user }) {
                         disabled={busy}
                         onClick={() => openActionModal(r, 'reject')}
                       >
-                        Reject
+                        {t('ปฏิเสธ', 'Reject')}
                       </Button>
                       <Button
                         size="sm"
@@ -561,7 +526,7 @@ export default function OrderPage({ user }) {
                         disabled={busy}
                         onClick={() => openAcceptModal(r)}
                       >
-                        Accept
+                        {t('รับงาน', 'Accept')}
                       </Button>
                     </>
                   ) : null}
@@ -575,53 +540,37 @@ export default function OrderPage({ user }) {
                         disabled={busy}
                         onClick={() => openActionModal(r, 'hold')}
                       >
-                        Hold
+                        {t('พักงาน', 'Hold')}
                       </Button>
                       <Button
                         size="sm"
                         variant="primary"
                         className="h-9 flex-[7]"
                         disabled={busy}
-                        onClick={() => openActionModal(r, 'complete')}
+                        icon={ScanLine}
+                        onClick={() => setScanRequest(r)}
                       >
-                        Complete
-                      </Button>
-                    </>
-                  ) : null}
-
-                  {status === 'IssueReturn' ? (
-                    <>
-                      <Button
-                        size="sm"
-                        variant="purple"
-                        className="h-9 flex-1"
-                        disabled={busy}
-                        onClick={() => openActionModal(r, 'issue')}
-                      >
-                        Issue
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="purple"
-                        className="h-9 flex-1"
-                        disabled={busy}
-                        onClick={() => openActionModal(r, 'return')}
-                      >
-                        Return
+                        {t('เสร็จงาน / สแกน', 'Complete / Scan')}
                       </Button>
                     </>
                   ) : null}
 
                   {status === 'Verify' ? (
-                    <Button
-                      size="sm"
-                      variant="success"
-                      className="h-9 flex-1"
-                      disabled={busy}
-                      onClick={() => openActionModal(r, 'verify')}
-                    >
-                      Verify
-                    </Button>
+                    isRequestor(r, user) ? (
+                      <Button
+                        size="sm"
+                        variant="success"
+                        className="h-9 flex-1"
+                        disabled={busy}
+                        onClick={() => openActionModal(r, 'verify')}
+                      >
+                        {t('ตรวจสอบ', 'Verify')}
+                      </Button>
+                    ) : (
+                      <div className="flex h-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-[10px] font-bold text-slate-400">
+                        {t('รอเจ้าของคำขอ Verify', 'Waiting for requester to verify')}
+                      </div>
+                    )
                   ) : null}
                   </div>
                 </div>
@@ -637,30 +586,30 @@ export default function OrderPage({ user }) {
         onClose={closeDetail}
         size="xl"
         icon={ClipboardList}
-        title={detail?.request_id || 'Request'}
-        subtitle={detail ? `${detail.type || '-'} · ${detail.status || '-'}` : ''}
+        title={detail?.request_id || t('คำขอ', 'Request')}
+        subtitle={detail ? `${requestType(detail.type)} · ${requestStatus(detail.status)}` : ''}
         tone={statusTone(detail?.status)}
       >
         {detail ? (
           <div className="space-y-4">
             <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/60 p-4 sm:grid-cols-3">
-              <InfoRow label="Line">{detail.line || '-'}</InfoRow>
-              <InfoRow label="Model">
+              <InfoRow label={t('Line', 'Line')}>{detail.line || '-'}</InfoRow>
+              <InfoRow label={t('Model', 'Model')}>
                 <span className="font-mono text-[11px]">{detail.currentModel || '-'}</span>
               </InfoRow>
-              <InfoRow label="Model ใหม่">
+              <InfoRow label={t('รุ่นใหม่', 'New Model')}>
                 <span className="font-mono text-[11px]">{resolveChangeModel(detail) || '-'}</span>
               </InfoRow>
-              <InfoRow label="Request type">{detail.type || '-'}</InfoRow>
-              <InfoRow label="ผู้ขอ">
+              <InfoRow label={t('ประเภทคำขอ', 'Request type')}>{requestType(detail.type)}</InfoRow>
+              <InfoRow label={t('ผู้ขอ', 'Requester')}>
                 {personLabel(detail.requestInfo)} · {formatDateTime(detail.requestInfo?.date)}
               </InfoRow>
-              <InfoRow label="รายละเอียด">{detail.desc || '-'}</InfoRow>
+              <InfoRow label={t('รายละเอียด', 'Details')}>{detail.desc || '-'}</InfoRow>
             </div>
 
             <div className="space-y-2 rounded-2xl border border-slate-200 bg-white p-4">
               <p className="text-[11px] font-black uppercase tracking-[0.12em] text-slate-500">
-                ผู้ดำเนินการ (Action users)
+                {t('ผู้ดำเนินการ (Action users)', 'Action users')}
               </p>
               <div className="divide-y divide-slate-100">
                 {ACTION_PEOPLE.map(({ key, label, dot }) => {
@@ -689,7 +638,7 @@ export default function OrderPage({ user }) {
             </div>
             {isBreakdown(detail) && Array.isArray(detail.breakdownItems) && detail.breakdownItems.length > 0 ? (
               <div className="space-y-2 rounded-2xl border border-orange-200 bg-orange-50/60 p-4">
-                <p className="text-[11px] font-black text-orange-800">Breakdown — รายการ Fixture ที่เสีย</p>
+                <p className="text-[11px] font-black text-orange-800">{requestType('Breakdown')} — {t('รายการ Fixture ที่เสีย', 'Broken fixture items')}</p>
                 {detail.breakdownItems.map((it, i) => (
                   <div key={i} className="rounded-xl border border-orange-100 bg-white px-3 py-2 text-[11px]">
                     <span className="font-mono font-bold text-slate-800">{it.sn || '-'}</span>
@@ -699,7 +648,7 @@ export default function OrderPage({ user }) {
               </div>
             ) : null}
             {isChangeModel(detail) ? (
-              <CompareBlock loading={compareLoading} error={compareError} compare={compare} />
+              <CompareBlock loading={compareLoading} error={sm(compareError)} compare={compare} t={t} />
             ) : null}
           </div>
         ) : null}
@@ -709,30 +658,30 @@ export default function OrderPage({ user }) {
         onClose={closeAcceptModal}
         size="xl"
         icon={ClipboardList}
-        title={acceptModal?.request_id || 'Request'}
-        subtitle={acceptModal ? `${acceptModal.type || '-'} · ${acceptModal.status || '-'}` : ''}
+        title={acceptModal?.request_id || t('คำขอ', 'Request')}
+        subtitle={acceptModal ? `${requestType(acceptModal.type)} · ${requestStatus(acceptModal.status)}` : ''}
         tone={statusTone(acceptModal?.status)}
       >
         {acceptModal ? (
           <div className="space-y-4">
             <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/60 p-4 sm:grid-cols-3">
-              <InfoRow label="Line">{acceptModal.line || '-'}</InfoRow>
-              <InfoRow label="Model">
+              <InfoRow label={t('Line', 'Line')}>{acceptModal.line || '-'}</InfoRow>
+              <InfoRow label={t('Model', 'Model')}>
                 <span className="font-mono text-[11px]">{acceptModal.currentModel || '-'}</span>
               </InfoRow>
-              <InfoRow label="Model ใหม่">
+              <InfoRow label={t('รุ่นใหม่', 'New Model')}>
                 <span className="font-mono text-[11px]">{acceptModelTo || '-'}</span>
               </InfoRow>
-              <InfoRow label="Request type">{acceptModal.type || '-'}</InfoRow>
-              <InfoRow label="ผู้ขอ">
+              <InfoRow label={t('ประเภทคำขอ', 'Request type')}>{requestType(acceptModal.type)}</InfoRow>
+              <InfoRow label={t('ผู้ขอ', 'Requester')}>
                 {personLabel(acceptModal.requestInfo)} · {formatDateTime(acceptModal.requestInfo?.date)}
               </InfoRow>
-              <InfoRow label="รายละเอียด">{acceptModal.desc || '-'}</InfoRow>
+              <InfoRow label={t('รายละเอียด', 'Details')}>{acceptModal.desc || '-'}</InfoRow>
             </div>
 
             {isBreakdown(acceptModal) && Array.isArray(acceptModal.breakdownItems) && acceptModal.breakdownItems.length > 0 ? (
               <div className="space-y-2 rounded-2xl border border-orange-200 bg-orange-50/60 p-4">
-                <p className="text-[11px] font-black text-orange-800">Breakdown — รายการ Fixture ที่เสีย</p>
+                <p className="text-[11px] font-black text-orange-800">{requestType('Breakdown')} — {t('รายการ Fixture ที่เสีย', 'Broken fixture items')}</p>
                 {acceptModal.breakdownItems.map((it, i) => (
                   <div key={i} className="rounded-xl border border-orange-100 bg-white px-3 py-2 text-[11px]">
                     <span className="font-mono font-bold text-slate-800">{it.sn || '-'}</span>
@@ -743,25 +692,25 @@ export default function OrderPage({ user }) {
             ) : null}
 
             {isChangeModel(acceptModal) ? (
-              <CompareBlock loading={compareLoading} error={compareError} compare={compare} />
+              <CompareBlock loading={compareLoading} error={sm(compareError)} compare={compare} t={t} />
             ) : null}
 
             <div className="space-y-2">
-              <p className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">รหัสผ่านเพื่อยืนยันรับงาน</p>
+              <p className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">{t('รหัสผ่านเพื่อยืนยันรับงาน', 'Password to confirm acceptance')}</p>
               <Input
                 type="password"
                 value={acceptPassword}
                 onChange={(e) => setAcceptPassword(e.target.value)}
-                placeholder="รหัสผ่าน"
+                placeholder={t('รหัสผ่าน', 'Password')}
               />
             </div>
 
             <div className="flex justify-end gap-2">
               <Button variant="secondary" size="sm" onClick={closeAcceptModal}>
-                ยกเลิก
+                {t('ยกเลิก', 'Cancel')}
               </Button>
               <Button variant="danger" size="sm" disabled={acceptBusy} onClick={() => handleAccept(acceptModal)}>
-                {acceptBusy ? 'กำลังรับงาน…' : 'ยืนยันรับงาน'}
+                {acceptBusy ? t('กำลังรับงาน…', 'Accepting…') : t('ยืนยันรับงาน', 'Confirm acceptance')}
               </Button>
             </div>
           </div>
@@ -781,26 +730,26 @@ export default function OrderPage({ user }) {
         {actionModal ? (
           <div className="space-y-4">
             <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
-              <InfoRow label="Line">{actionModal.request?.line || '-'}</InfoRow>
-              <InfoRow label="Request type">{actionModal.request?.type || '-'}</InfoRow>
-              <InfoRow label="สถานะ">
-                {actionModal.request?.status || '-'} → {ACTION_META[actionModal.action]?.label}
+              <InfoRow label={t('Line', 'Line')}>{actionModal.request?.line || '-'}</InfoRow>
+              <InfoRow label={t('ประเภทคำขอ', 'Request type')}>{requestType(actionModal.request?.type)}</InfoRow>
+              <InfoRow label={t('สถานะ', 'Status')}>
+                {actionModal.request?.status ? requestStatus(actionModal.request.status) : '-'} → {ACTION_META[actionModal.action]?.label}
               </InfoRow>
             </div>
 
             <div className="space-y-2">
-              <p className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">รหัสผ่านเพื่อยืนยัน</p>
+              <p className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">{t('รหัสผ่านเพื่อยืนยัน', 'Password to confirm')}</p>
               <Input
                 type="password"
                 value={actionPassword}
                 onChange={(e) => setActionPassword(e.target.value)}
-                placeholder="รหัสผ่าน"
+                placeholder={t('รหัสผ่าน', 'Password')}
               />
             </div>
 
             <div className="flex justify-end gap-2">
               <Button variant="secondary" size="sm" onClick={closeActionModal}>
-                ยกเลิก
+                {t('ยกเลิก', 'Cancel')}
               </Button>
               <Button
                 variant={actionModal.action === 'hold' ? 'warning' : actionModal.action === 'verify' ? 'success' : 'primary'}
@@ -808,12 +757,20 @@ export default function OrderPage({ user }) {
                 disabled={actionBusy}
                 onClick={confirmAction}
               >
-                {actionBusy ? 'กำลังดำเนินการ…' : 'ยืนยัน'}
+                {actionBusy ? t('กำลังดำเนินการ…', 'Processing…') : t('ยืนยัน', 'Confirm')}
               </Button>
             </div>
           </div>
         ) : null}
       </Modal>
+
+      <OrderScanModal
+        open={Boolean(scanRequest)}
+        request={scanRequest}
+        user={user}
+        onClose={() => setScanRequest(null)}
+        onDone={reloadRows}
+      />
     </div>
   )
 }

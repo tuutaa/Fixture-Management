@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { cn } from '../../lib/format'
+import { useLanguage } from '../../context/LanguageContext'
 
 const TONES = {
   blue: {
@@ -71,6 +72,7 @@ export default function Modal({
   closeOnBackdrop = true,
 }) {
   const panelRef = useRef(null)
+  const { t } = useLanguage()
 
   useEffect(() => {
     if (!open) return undefined
@@ -129,7 +131,7 @@ export default function Modal({
         ref={panelRef}
         role="dialog"
         aria-modal="true"
-        aria-label={typeof title === 'string' ? title : 'Dialog'}
+        aria-label={typeof title === 'string' ? title : t('กล่องข้อความ', 'Dialog')}
         className={cn(
           'animate-fade-up flex max-h-[94vh] w-full flex-col overflow-hidden rounded-t-[1.75rem] border border-slate-200 bg-white shadow-2xl sm:rounded-[1.75rem]',
           SIZES[size] || SIZES.md,
@@ -164,7 +166,7 @@ export default function Modal({
               type="button"
               data-close
               onClick={onClose}
-              aria-label="Close dialog"
+              aria-label={t('ปิดกล่องข้อความ', 'Close dialog')}
               className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-slate-400 shadow-sm transition-colors hover:text-red-500"
             >
               <X className="h-5 w-5" strokeWidth={2.4} />

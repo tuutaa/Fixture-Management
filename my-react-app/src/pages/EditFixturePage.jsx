@@ -13,7 +13,7 @@ import {
   TriangleAlert,
 } from 'lucide-react'
 import api from '../lib/api'
-import { FIXTURE_STATUS_OPTIONS } from '../lib/constants'
+import { FIXTURE_STATUS_OPTIONS, fixtureTone } from '../lib/constants'
 import {
   Card,
   EmptyState,
@@ -22,7 +22,6 @@ import {
   SectionHeader,
   Spinner,
 } from '../components/ui/Card'
-import { FixtureStatusBadge } from '../components/ui/Badge'
 import { FormField, Input, NativeSelect } from '../components/ui/Field'
 import Button from '../components/ui/Button'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
@@ -31,7 +30,8 @@ import Tabs from '../components/ui/Tabs'
 import DataTable from '../components/ui/DataTable'
 import Modal from '../components/ui/Modal'
 import { useToast } from '../components/ui/Toast'
-import { formatDate, formatDateTime, toDateInput } from '../lib/format'
+import { cn, formatDate, formatDateTime, toDateInput } from '../lib/format'
+import { useLabels, useServerMessage } from '../lib/i18n'
 
 const emptyForm = {
   status: 'In Stock',
@@ -65,7 +65,25 @@ const formFromFixture = (fixture) => ({
   registeredDate: toDateInput(fixture.registered?.date),
 })
 
+/* Mirrors the shared status chip markup, with a translated label. */
+const StatusBadge = ({ status, label }) => {
+  const tone = fixtureTone(status)
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-bold ring-1 ring-inset',
+        tone.chip,
+      )}
+    >
+      <span className={cn('h-1.5 w-1.5 rounded-full', tone.dot)} />
+      {label}
+    </span>
+  )
+}
+
 export default function EditFixturePage({ user, onNavigate }) {
+  const { t, fixtureStatus } = useLabels()
+  const sm = useServerMessage()
   const toast = useToast()
   const [activeTab, setActiveTab] = useState('fixture')
   const [all, setAll] = useState([])
@@ -95,11 +113,13 @@ export default function EditFixturePage({ user, onNavigate }) {
       const data = await api.storages()
       setStorages(Array.isArray(data) ? data : [])
     } catch (err) {
-      toast.error(err.message || 'โหลด Storage ไม่สำเร็จ')
+      toast.error(
+        err.message ? sm(err.message) : t('โหลดตำแหน่งเก็บไม่สำเร็จ', 'Failed to load storage locations'),
+      )
     } finally {
       setStorageLoading(false)
     }
-  }, [toast])
+  }, [sm, t, toast])
 
   const loadList = useCallback(async () => {
     try {
@@ -108,11 +128,11 @@ export default function EditFixturePage({ user, onNavigate }) {
       const data = await api.fixtures()
       setAll(Array.isArray(data) ? data : [])
     } catch (err) {
-      setListError(err.message)
+      setListError(sm(err.message))
     } finally {
       setLoadingList(false)
     }
-  }, [])
+  }, [sm])
 
   useEffect(() => {
     loadList()
@@ -134,7 +154,7 @@ export default function EditFixturePage({ user, onNavigate }) {
     async (target) => {
       const value = String(target || '').trim()
       if (!value) {
-        toast.error('กรุณาระบุ Serial Number')
+        toast.error(t('กรุณาระบุ Serial Number', 'Please specify a serial number'))
         return
       }
       setLoading(true)
@@ -154,13 +174,13 @@ export default function EditFixturePage({ user, onNavigate }) {
         if (err.status === 404) {
           setNotFound(value)
         } else {
-          toast.error(err.message)
+          toast.error(sm(err.message))
         }
       } finally {
         setLoading(false)
       }
     },
-    [toast],
+    [sm, t, toast],
   )
 
   const pick = (value) => {
@@ -196,10 +216,13 @@ export default function EditFixturePage({ user, onNavigate }) {
       const data = await api.updateFixture(fixture.sn, payload)
       setFixture(data.fixture)
       setForm(formFromFixture(data.fixture))
-      toast.success(`บันทึก ${fixture.sn} สำเร็จ`, { title: 'Edit saved' })
+      toast.success(
+        t(`บันทึก ${fixture.sn} สำเร็จ`, `Saved ${fixture.sn} successfully`),
+        { title: t('บันทึกการแก้ไขแล้ว', 'Edit saved') },
+      )
       await loadList()
     } catch (err) {
-      toast.error(err.message)
+      toast.error(sm(err.message))
     } finally {
       setBusy(false)
     }
@@ -208,22 +231,25 @@ export default function EditFixturePage({ user, onNavigate }) {
   const askDelete = () => {
     if (!fixture) return
     setConfirm({
-      title: `ลบ ${fixture.sn}`,
-      message: `ต้องการลบ Fixture ${fixture.sn} ออกจากระบบหรือไม่ — การลบจะถูกบันทึกใน History`,
+      title: t(`ลบ ${fixture.sn}`, `Delete ${fixture.sn}`),
+      message: t(
+        `ต้องการลบ Fixture ${fixture.sn} ออกจากระบบหรือไม่ — การลบจะถูกบันทึกใน History`,
+        `Delete fixture ${fixture.sn} from the system? — the deletion will be recorded in history`,
+      ),
       tone: 'red',
-      confirmLabel: 'ลบ Fixture',
+      confirmLabel: t('ลบ Fixture', 'Delete fixture'),
       onConfirm: async () => {
         setBusy(true)
         try {
           await api.deleteFixture(fixture.sn, user)
-          toast.success(`ลบ ${fixture.sn} แล้ว`)
+          toast.success(t(`ลบ ${fixture.sn} แล้ว`, `Deleted ${fixture.sn}`))
           setConfirm(null)
           setFixture(null)
           setForm(emptyForm)
           setSn('')
           await loadList()
         } catch (err) {
-          toast.error(err.message)
+          toast.error(sm(err.message))
         } finally {
           setBusy(false)
         }
@@ -246,22 +272,26 @@ export default function EditFixturePage({ user, onNavigate }) {
     e?.preventDefault?.()
     const location = storageForm.location.trim()
     if (!location) {
-      toast.error('กรุณาระบุ Storage Location')
+      toast.error(t('กรุณาระบุตำแหน่งเก็บ', 'Please specify a storage location'))
       return
     }
     setStorageBusy(true)
     try {
       if (storageModal?.mode === 'create') {
         await api.createStorage({ location, desc: storageForm.desc })
-        toast.success(`เพิ่ม Storage ${location} เรียบร้อยแล้ว`)
+        toast.success(t(`เพิ่มตำแหน่งเก็บ ${location} เรียบร้อยแล้ว`, `Added storage ${location} successfully`))
       } else if (storageModal?.mode === 'edit' && storageModal.data?._id) {
         await api.updateStorage(storageModal.data._id, { location, desc: storageForm.desc })
-        toast.success(`แก้ไข Storage ${location} เรียบร้อยแล้ว`)
+        toast.success(t(`แก้ไขตำแหน่งเก็บ ${location} เรียบร้อยแล้ว`, `Updated storage ${location} successfully`))
       }
       setStorageModal(null)
       await loadStorages()
     } catch (err) {
-      toast.error(err.message || 'บันทึก Storage ไม่สำเร็จ')
+      toast.error(
+        err.message
+          ? sm(err.message)
+          : t('บันทึกตำแหน่งเก็บไม่สำเร็จ', 'Failed to save storage location'),
+      )
     } finally {
       setStorageBusy(false)
     }
@@ -269,19 +299,26 @@ export default function EditFixturePage({ user, onNavigate }) {
 
   const askDeleteStorage = (item) => {
     setConfirm({
-      title: `ลบ Storage ${item.location}`,
-      message: `ต้องการลบ Storage Location "${item.location}" หรือไม่?`,
+      title: t(`ลบตำแหน่งเก็บ ${item.location}`, `Delete storage ${item.location}`),
+      message: t(
+        `ต้องการลบตำแหน่งเก็บ "${item.location}" หรือไม่?`,
+        `Delete storage location "${item.location}"?`,
+      ),
       tone: 'red',
-      confirmLabel: 'ลบ Storage',
+      confirmLabel: t('ลบตำแหน่งเก็บ', 'Delete storage'),
       onConfirm: async () => {
         setStorageBusy(true)
         try {
           await api.deleteStorage(item._id)
-          toast.success(`ลบ Storage ${item.location} เรียบร้อยแล้ว`)
+          toast.success(t(`ลบตำแหน่งเก็บ ${item.location} เรียบร้อยแล้ว`, `Deleted storage ${item.location} successfully`))
           setConfirm(null)
           await loadStorages()
         } catch (err) {
-          toast.error(err.message || 'ลบ Storage ไม่สำเร็จ')
+          toast.error(
+            err.message
+              ? sm(err.message)
+              : t('ลบตำแหน่งเก็บไม่สำเร็จ', 'Failed to delete storage location'),
+          )
         } finally {
           setStorageBusy(false)
         }
@@ -302,21 +339,21 @@ export default function EditFixturePage({ user, onNavigate }) {
   const storageColumns = [
     {
       key: 'location',
-      header: 'Storage Location',
+      header: t('ตำแหน่งเก็บ', 'Storage location'),
       render: (row) => (
         <span className="font-mono text-xs font-bold text-slate-800">{row.location}</span>
       ),
     },
     {
       key: 'desc',
-      header: 'Description',
+      header: t('คำอธิบาย', 'Description'),
       render: (row) => (
         <span className="text-xs text-slate-600">{row.desc || '-'}</span>
       ),
     },
     {
       key: 'actions',
-      header: 'จัดการ',
+      header: t('จัดการ', 'Actions'),
       align: 'right',
       sortable: false,
       render: (row) => (
@@ -327,7 +364,7 @@ export default function EditFixturePage({ user, onNavigate }) {
             icon={PencilLine}
             onClick={() => openEditStorage(row)}
           >
-            แก้ไข
+            {t('แก้ไข', 'Edit')}
           </Button>
           <Button
             size="sm"
@@ -335,7 +372,7 @@ export default function EditFixturePage({ user, onNavigate }) {
             icon={Trash2}
             onClick={() => askDeleteStorage(row)}
           >
-            ลบ
+            {t('ลบ', 'Delete')}
           </Button>
         </div>
       ),
@@ -345,9 +382,9 @@ export default function EditFixturePage({ user, onNavigate }) {
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Fixture"
+        eyebrow={t('Fixture', 'Fixture')}
         icon={PencilLine}
-        title="Edit"
+        title={t('แก้ไข', 'Edit')}
       />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -356,14 +393,14 @@ export default function EditFixturePage({ user, onNavigate }) {
           onChange={setActiveTab}
           size="sm"
           tabs={[
-            { value: 'fixture', label: 'Fixture', icon: Boxes },
-            { value: 'storage', label: 'Storage', icon: Database },
+            { value: 'fixture', label: t('Fixture', 'Fixture'), icon: Boxes },
+            { value: 'storage', label: t('ตำแหน่งเก็บ', 'Storage'), icon: Database },
           ]}
         />
         <span className="text-[11px] font-semibold text-slate-400">
           {activeTab === 'fixture'
-            ? `${all.length.toLocaleString()} Fixtures`
-            : `${storages.length.toLocaleString()} Storages`}
+            ? t(`${all.length.toLocaleString()} Fixture`, `${all.length.toLocaleString()} fixtures`)
+            : t(`${storages.length.toLocaleString()} ตำแหน่งเก็บ`, `${storages.length.toLocaleString()} storage locations`)}
         </span>
       </div>
 
@@ -371,11 +408,11 @@ export default function EditFixturePage({ user, onNavigate }) {
         <>
           <Card className="p-4 sm:p-5">
             <div className="grid gap-3 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
-              <FormField label="ค้นหา Serial Number">
+              <FormField label={t('ค้นหา Serial Number', 'Search serial number')}>
                 <div className="flex gap-2">
                   <Input
                     className="font-mono"
-                    placeholder="เช่น RTR-0001"
+                    placeholder={t('เช่น RTR-0001', 'e.g. RTR-0001')}
                     value={sn}
                     onChange={(event) => setSn(event.target.value)}
                     onKeyDown={(event) => {
@@ -383,29 +420,29 @@ export default function EditFixturePage({ user, onNavigate }) {
                     }}
                   />
                   <Button icon={Search} onClick={() => load(sn)} disabled={loading} className="shrink-0">
-                    ค้นหา
+                    {t('ค้นหา', 'Search')}
                   </Button>
                 </div>
               </FormField>
-              <FormField label="หรือเลือกจาก Fixture ทั้งหมด">
+              <FormField label={t('หรือเลือกจาก Fixture ทั้งหมด', 'Or select from all fixtures')}>
                 {loadingList ? (
-                  <div className="field-input text-xs text-slate-400">กำลังโหลดรายการ…</div>
+                  <div className="field-input text-xs text-slate-400">{t('กำลังโหลดรายการ…', 'Loading list…')}</div>
                 ) : (
                   <SearchableSelect
                     value={fixture?.sn || ''}
                     onChange={pick}
                     options={pickOptions}
-                    placeholder="เลือก SN"
+                    placeholder={t('เลือก SN', 'Select SN')}
                     clearable
                   />
                 )}
               </FormField>
               <div className="flex flex-wrap gap-2">
                 <Button variant="secondary" onClick={loadList} disabled={loadingList}>
-                  รีเฟรชรายการ
+                  {t('รีเฟรชรายการ', 'Refresh list')}
                 </Button>
                 <Button variant="secondary" icon={Info} onClick={() => onNavigate('register')}>
-                  Register Fixture
+                  {t('ลงทะเบียน Fixture', 'Register fixture')}
                 </Button>
               </div>
             </div>
@@ -414,16 +451,16 @@ export default function EditFixturePage({ user, onNavigate }) {
 
           {loading ? (
             <Card>
-              <Spinner label="กำลังโหลดข้อมูล Fixture…" />
+              <Spinner label={t('กำลังโหลดข้อมูล Fixture…', 'Loading fixture data…')} />
             </Card>
           ) : notFound ? (
             <Card>
               <EmptyState
                 icon={TriangleAlert}
-                title={`If Not Exist — ไม่พบ ${notFound}`}
+                title={t(`If Not Exist — ไม่พบ ${notFound}`, `If Not Exist — ${notFound} not found`)}
                 action={
                   <Button icon={ArrowRight} onClick={() => onNavigate('register')}>
-                    ไปที่ Register Fixture
+                    {t('ไปที่ลงทะเบียน Fixture', 'Go to register fixture')}
                   </Button>
                 }
               />
@@ -432,10 +469,10 @@ export default function EditFixturePage({ user, onNavigate }) {
             <Card>
               <EmptyState
                 icon={PencilLine}
-                title="เลือก Fixture ที่ต้องการแก้ไข"
+                title={t('เลือก Fixture ที่ต้องการแก้ไข', 'Select the fixture you want to edit')}
                 action={
                   <Button variant="secondary" icon={Boxes} onClick={() => onNavigate('fixtures')}>
-                    ดู Fixture List
+                    {t('ดูรายการ Fixture', 'View fixture list')}
                   </Button>
                 }
               />
@@ -450,39 +487,39 @@ export default function EditFixturePage({ user, onNavigate }) {
                   className="mb-3"
                 />
                 <div className="flex flex-wrap items-center gap-2">
-                  <FixtureStatusBadge status={fixture.status} />
+                  <StatusBadge status={fixture.status} label={fixtureStatus(fixture.status)} />
                   <span className="rounded-lg bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-600">
                     {fixture.type || '-'}
                   </span>
                   <span className="rounded-lg bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-600">
-                    Rev {fixture.revision || '-'}
+                    {t('Rev', 'Rev')} {fixture.revision || '-'}
                   </span>
                 </div>
                 <div className="mt-3 divide-y divide-slate-100">
-                  <InfoRow label="Line" value={fixture.line} />
-                  <InfoRow label="Model" value={fixture.model} />
-                  <InfoRow label="Step" value={fixture.step} />
-                  <InfoRow label="Process" value={fixture.process} />
-                  <InfoRow label="Position" value={fixture.position} />
-                  <InfoRow label="Storage" value={fixture.usage?.storage || fixture.storage} />
-                  <InfoRow label="Fixture Base" value={fixture.fixtureBase} mono />
-                  <InfoRow label="Usage" value={`${fixture.usage?.current || 0} / ${fixture.usage?.max || 0}`} />
-                  <InfoRow label="Exp" value={formatDate(fixture.usage?.exp)} />
+                  <InfoRow label={t('Line', 'Line')} value={fixture.line} />
+                  <InfoRow label={t('Model', 'Model')} value={fixture.model} />
+                  <InfoRow label={t('Step', 'Step')} value={fixture.step} />
+                  <InfoRow label={t('Process', 'Process')} value={fixture.process} />
+                  <InfoRow label={t('Position', 'Position')} value={fixture.position} />
+                  <InfoRow label={t('ตำแหน่งเก็บ', 'Storage')} value={fixture.usage?.storage || fixture.storage} />
+                  <InfoRow label={t('Fixture Base', 'Fixture Base')} value={fixture.fixtureBase} mono />
+                  <InfoRow label={t('Usage', 'Usage')} value={`${fixture.usage?.current || 0} / ${fixture.usage?.max || 0}`} />
+                  <InfoRow label={t('Exp', 'Exp')} value={formatDate(fixture.usage?.exp)} />
                   <InfoRow
-                    label="Registered"
+                    label={t('ลงทะเบียนโดย', 'Registered by')}
                     value={[fixture.registered?.name, fixture.registered?.lastname].filter(Boolean).join(' ') || '-'}
                   />
-                  <InfoRow label="Registered Date" value={formatDateTime(fixture.registered?.date)} />
+                  <InfoRow label={t('วันที่ลงทะเบียน', 'Registered date')} value={formatDateTime(fixture.registered?.date)} />
                 </div>
 
                 <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
                   <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">
-                    ประวัติของ Fixture นี้
+                    {t('ประวัติของ Fixture นี้', 'History of this fixture')}
                   </p>
                   {historyLoading ? (
-                    <p className="text-[11px] text-slate-400">กำลังโหลด…</p>
+                    <p className="text-[11px] text-slate-400">{t('กำลังโหลด…', 'Loading…')}</p>
                   ) : fixtureHistory.length === 0 ? (
-                    <p className="text-[11px] text-slate-400">ยังไม่มีประวัติ</p>
+                    <p className="text-[11px] text-slate-400">{t('ยังไม่มีประวัติ', 'No history yet')}</p>
                   ) : (
                     <ol className="space-y-2">
                       {fixtureHistory.map((item) => (
@@ -502,13 +539,13 @@ export default function EditFixturePage({ user, onNavigate }) {
 
                 <div className="mt-5 rounded-2xl border border-red-200 bg-red-50/50 p-4">
                   <p className="flex items-center gap-1.5 text-[11px] font-black text-red-700">
-                    <TriangleAlert className="h-3.5 w-3.5" /> Danger zone
+                    <TriangleAlert className="h-3.5 w-3.5" /> {t('โซนอันตราย', 'Danger zone')}
                   </p>
                   <p className="mt-1 text-[10px] leading-relaxed text-red-600">
-                    ลบ Fixture ออกจากระบบ (บันทึก History) — ไม่สามารถย้อนกลับได้
+                    {t('ลบ Fixture ออกจากระบบ (บันทึก History) — ไม่สามารถย้อนกลับได้', 'Delete the fixture from the system (recorded in history) — this cannot be undone')}
                   </p>
                   <Button variant="danger" size="sm" icon={Trash2} className="mt-3" onClick={askDelete} disabled={busy}>
-                    ลบ Fixture นี้
+                    {t('ลบ Fixture นี้', 'Delete this fixture')}
                   </Button>
                 </div>
               </Card>
@@ -516,54 +553,54 @@ export default function EditFixturePage({ user, onNavigate }) {
               <Card className="p-5 sm:p-7">
                 <SectionHeader
                   icon={PencilLine}
-                  title="Edit Fixture Info"
+                  title={t('แก้ไขข้อมูล Fixture', 'Edit fixture info')}
                   className="mb-5"
                 />
                 <form onSubmit={save} className="space-y-5" noValidate>
                   <div className="grid gap-4 sm:grid-cols-2">
-                    <FormField label="Status">
+                    <FormField label={t('สถานะ', 'Status')}>
                       <NativeSelect value={form.status} onChange={(event) => setField('status', event.target.value)}>
                         {FIXTURE_STATUS_OPTIONS.map((option) => (
                           <option key={option.value} value={option.value}>
-                            {option.label}
+                            {fixtureStatus(option.value)}
                           </option>
                         ))}
                       </NativeSelect>
                     </FormField>
-                    <FormField label="Type">
+                    <FormField label={t('Type', 'Type')}>
                       <Input value={form.type} onChange={(event) => setField('type', event.target.value)} />
                     </FormField>
-                    <FormField label="Step">
+                    <FormField label={t('Step', 'Step')}>
                       <Input value={form.step} onChange={(event) => setField('step', event.target.value)} />
                     </FormField>
-                    <FormField label="Process">
+                    <FormField label={t('Process', 'Process')}>
                       <Input value={form.process} onChange={(event) => setField('process', event.target.value)} />
                     </FormField>
-                    <FormField label="Position">
+                    <FormField label={t('Position', 'Position')}>
                       <Input value={form.position} onChange={(event) => setField('position', event.target.value)} />
                     </FormField>
-                    <FormField label="Storage (Usage Storage)">
+                    <FormField label={t('ตำแหน่งเก็บ (Usage Storage)', 'Storage (usage storage)')}>
                       <Input
                         value={form.usageStorage}
                         onChange={(event) => setField('usageStorage', event.target.value)}
-                        placeholder="เช่น B301"
+                        placeholder={t('เช่น B301', 'e.g. B301')}
                       />
                     </FormField>
-                    <FormField label="Fixture Base">
+                    <FormField label={t('Fixture Base', 'Fixture Base')}>
                       <Input
                         className="font-mono"
                         value={form.fixtureBase}
                         onChange={(event) => setField('fixtureBase', event.target.value)}
                       />
                     </FormField>
-                    <FormField label="Revision">
+                    <FormField label={t('Revision', 'Revision')}>
                       <Input
                         className="font-mono"
                         value={form.revision}
                         onChange={(event) => setField('revision', event.target.value)}
                       />
                     </FormField>
-                    <FormField label="Usage Current">
+                    <FormField label={t('การใช้งานปัจจุบัน', 'Usage Current')}>
                       <Input
                         type="number"
                         min="0"
@@ -571,7 +608,7 @@ export default function EditFixturePage({ user, onNavigate }) {
                         onChange={(event) => setField('current', event.target.value)}
                       />
                     </FormField>
-                    <FormField label="Usage Max">
+                    <FormField label={t('การใช้งานสูงสุด', 'Usage Max')}>
                       <Input
                         type="number"
                         min="0"
@@ -579,28 +616,28 @@ export default function EditFixturePage({ user, onNavigate }) {
                         onChange={(event) => setField('max', event.target.value)}
                       />
                     </FormField>
-                    <FormField label="Exp (PM Due)">
+                    <FormField label={t('Exp (PM Due)', 'Exp (PM Due)')}>
                       <Input type="date" value={form.exp} onChange={(event) => setField('exp', event.target.value)} />
                     </FormField>
-                    <FormField label="Registered Date">
+                    <FormField label={t('Registered Date', 'Registered date')}>
                       <Input
                         type="date"
                         value={form.registeredDate}
                         onChange={(event) => setField('registeredDate', event.target.value)}
                       />
                     </FormField>
-                    <FormField label="desc" className="sm:col-span-2">
+                    <FormField label={t('รายละเอียด', 'Description')} className="sm:col-span-2">
                       <Input
                         value={form.desc}
                         onChange={(event) => setField('desc', event.target.value)}
-                        placeholder="รายละเอียดเพิ่มเติม"
+                        placeholder={t('รายละเอียดเพิ่มเติม', 'Additional details')}
                       />
                     </FormField>
                   </div>
 
                   <div className="flex flex-wrap gap-2.5">
                     <Button type="submit" icon={Save} disabled={busy}>
-                      {busy ? 'กำลังบันทึก…' : 'Save changes'}
+                      {busy ? t('กำลังบันทึก…', 'Saving…') : t('บันทึกการเปลี่ยนแปลง', 'Save changes')}
                     </Button>
                     <Button
                       type="button"
@@ -608,7 +645,7 @@ export default function EditFixturePage({ user, onNavigate }) {
                       onClick={() => setForm(formFromFixture(fixture))}
                       disabled={busy}
                     >
-                      ย้อนกลับ
+                      {t('ย้อนกลับ', 'Reset')}
                     </Button>
                     <Button
                       type="button"
@@ -616,7 +653,7 @@ export default function EditFixturePage({ user, onNavigate }) {
                       icon={CheckCircle2}
                       onClick={() => onNavigate('history')}
                     >
-                      ดู History
+                      {t('ดู History', 'View history')}
                     </Button>
                   </div>
                 </form>
@@ -632,7 +669,7 @@ export default function EditFixturePage({ user, onNavigate }) {
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                 <Input
                   className="field-input-sm pl-9"
-                  placeholder="ค้นหา Storage / Description..."
+                  placeholder={t('ค้นหาตำแหน่งเก็บ / คำอธิบาย...', 'Search storage / description...')}
                   value={storageSearch}
                   onChange={(e) => setStorageSearch(e.target.value)}
                 />
@@ -644,14 +681,14 @@ export default function EditFixturePage({ user, onNavigate }) {
                   onClick={loadStorages}
                   disabled={storageLoading}
                 >
-                  รีเฟรช
+                  {t('รีเฟรช', 'Refresh')}
                 </Button>
                 <Button
                   size="sm"
                   icon={Plus}
                   onClick={openCreateStorage}
                 >
-                  Add Storage
+                  {t('เพิ่มตำแหน่งเก็บ', 'Add storage')}
                 </Button>
               </div>
             </div>
@@ -659,7 +696,7 @@ export default function EditFixturePage({ user, onNavigate }) {
 
           <Card className="overflow-hidden">
             {storageLoading ? (
-              <Spinner label="กำลังโหลด Storage..." />
+              <Spinner label={t('กำลังโหลดตำแหน่งเก็บ…', 'Loading storage locations…')} />
             ) : (
               <DataTable
                 columns={storageColumns}
@@ -668,11 +705,11 @@ export default function EditFixturePage({ user, onNavigate }) {
                 pageSize={20}
                 dense
                 emptyIcon={Database}
-                emptyTitle="ไม่พบ Storage"
-                emptyDescription="ยังไม่มี Storage หรือไม่พบตามคำค้นหา"
+                emptyTitle={t('ไม่พบตำแหน่งเก็บ', 'No storage locations found')}
+                emptyDescription={t('ยังไม่มีตำแหน่งเก็บ หรือไม่พบตามคำค้นหา', 'No storage locations yet or none match the search')}
                 emptyAction={
                   <Button size="sm" icon={Plus} onClick={openCreateStorage}>
-                    เพิ่ม Storage แรก
+                    {t('เพิ่มตำแหน่งเก็บแรก', 'Add the first storage location')}
                   </Button>
                 }
               />
@@ -685,26 +722,28 @@ export default function EditFixturePage({ user, onNavigate }) {
       <Modal
         open={Boolean(storageModal)}
         onClose={() => (storageBusy ? null : setStorageModal(null))}
-        title={storageModal?.mode === 'create' ? 'Add Storage' : 'Edit Storage'}
-        subtitle={storageModal?.mode === 'create' ? 'เพิ่มตำแหน่งจัดเก็บใหม่' : `แก้ไขตำแหน่ง ${storageModal?.data?.location || ''}`}
+        title={storageModal?.mode === 'create' ? t('เพิ่มตำแหน่งเก็บ', 'Add storage') : t('แก้ไขตำแหน่งเก็บ', 'Edit storage')}
+        subtitle={storageModal?.mode === 'create'
+          ? t('เพิ่มตำแหน่งจัดเก็บใหม่', 'Add a new storage location')
+          : t(`แก้ไขตำแหน่ง ${storageModal?.data?.location || ''}`, `Edit location ${storageModal?.data?.location || ''}`)}
         icon={Database}
         size="md"
       >
         <form onSubmit={saveStorage} className="space-y-4 pt-2">
-          <FormField label="Storage Location" required>
+          <FormField label={t('ตำแหน่งเก็บ', 'Storage location')} required>
             <Input
               value={storageForm.location}
               onChange={(e) => setStorageForm((c) => ({ ...c, location: e.target.value }))}
-              placeholder="เช่น A-01-01 หรือ Rack A"
+              placeholder={t('เช่น A-01-01 หรือ Rack A', 'e.g. A-01-01 or Rack A')}
               autoFocus
               required
             />
           </FormField>
-          <FormField label="Description">
+          <FormField label={t('คำอธิบาย', 'Description')}>
             <Input
               value={storageForm.desc}
               onChange={(e) => setStorageForm((c) => ({ ...c, desc: e.target.value }))}
-              placeholder="รายละเอียดตำแหน่ง (ไม่บังคับ)"
+              placeholder={t('รายละเอียดตำแหน่ง (ไม่บังคับ)', 'Location details (optional)')}
             />
           </FormField>
           <div className="flex justify-end gap-2 pt-2">
@@ -714,14 +753,14 @@ export default function EditFixturePage({ user, onNavigate }) {
               onClick={() => setStorageModal(null)}
               disabled={storageBusy}
             >
-              ยกเลิก
+              {t('ยกเลิก', 'Cancel')}
             </Button>
             <Button
               type="submit"
               icon={Save}
               disabled={storageBusy}
             >
-              {storageBusy ? 'กำลังบันทึก…' : 'บันทึก Storage'}
+              {storageBusy ? t('กำลังบันทึก…', 'Saving…') : t('บันทึกตำแหน่งเก็บ', 'Save storage')}
             </Button>
           </div>
         </form>

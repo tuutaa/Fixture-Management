@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '../../lib/format'
+import { useLanguage } from '../../context/LanguageContext'
 import { EmptyState } from './Card'
 
 const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' })
@@ -19,7 +20,7 @@ export default function DataTable({
   pageSize = 10,
   initialSort = null,
   emptyIcon,
-  emptyTitle = 'ไม่พบข้อมูล',
+  emptyTitle,
   emptyDescription,
   emptyAction,
   toolbar,
@@ -27,6 +28,7 @@ export default function DataTable({
   className,
   footerNote,
 }) {
+  const { t } = useLanguage()
   const [sort, setSort] = useState(initialSort)
   const [page, setPage] = useState(1)
 
@@ -77,7 +79,7 @@ export default function DataTable({
       {pageRows.length === 0 ? (
         <EmptyState
           icon={emptyIcon}
-          title={emptyTitle}
+          title={emptyTitle ?? t('ไม่พบข้อมูล', 'No data')}
           description={emptyDescription}
           action={emptyAction}
         />
@@ -170,15 +172,15 @@ export default function DataTable({
         <p className="text-[11px] font-medium text-slate-400">
           {footerNote ? `${footerNote} · ` : ''}
           {sorted.length === 0
-            ? '0 รายการ'
-            : `แสดง ${start + 1}–${Math.min(start + pageSize, sorted.length)} จาก ${sorted.length.toLocaleString()} รายการ`}
+            ? t('0 รายการ', '0 items')
+            : `${t('แสดง', 'Showing')} ${start + 1}–${Math.min(start + pageSize, sorted.length)} ${t('จาก', 'of')} ${sorted.length.toLocaleString()} ${t('รายการ', 'items')}`}
         </p>
         <div className="flex items-center gap-1.5">
           <button
             type="button"
             onClick={() => setPage((value) => Math.max(1, value - 1))}
             disabled={safePage === 1}
-            aria-label="Previous page"
+            aria-label={t('หน้าก่อนหน้า', 'Previous page')}
             className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <ChevronLeft className="h-4 w-4" />
@@ -208,7 +210,7 @@ export default function DataTable({
             type="button"
             onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
             disabled={safePage === totalPages}
-            aria-label="Next page"
+            aria-label={t('หน้าถัดไป', 'Next page')}
             className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <ChevronRight className="h-4 w-4" />

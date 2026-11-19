@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronsUpDown, Search, X } from 'lucide-react'
 import { cn } from '../../lib/format'
+import { useLanguage } from '../../context/LanguageContext'
 
 /**
  * FAN2 searchable dropdown.
@@ -13,9 +14,9 @@ export default function SearchableSelect({
   value,
   onChange,
   options = [],
-  placeholder = 'เลือกข้อมูล',
-  searchPlaceholder = 'พิมพ์เพื่อค้นหา…',
-  emptyText = 'ไม่พบข้อมูลที่ตรงกัน',
+  placeholder,
+  searchPlaceholder,
+  emptyText,
   disabled = false,
   clearable = false,
   className,
@@ -23,6 +24,11 @@ export default function SearchableSelect({
   id,
   ariaLabel,
 }) {
+  const { t } = useLanguage()
+  const resolvedPlaceholder = placeholder ?? t('เลือกข้อมูล', 'Select')
+  const resolvedSearchPlaceholder = searchPlaceholder ?? t('พิมพ์เพื่อค้นหา…', 'Type to search…')
+  const resolvedEmptyText = emptyText ?? t('ไม่พบข้อมูลที่ตรงกัน', 'No matching data')
+
   const listId = useId()
   const triggerRef = useRef(null)
   const panelRef = useRef(null)
@@ -140,13 +146,13 @@ export default function SearchableSelect({
             className,
           )}
         >
-          <span className="min-w-0 truncate">{selected ? selected.label : placeholder}</span>
+          <span className="min-w-0 truncate">{selected ? selected.label : resolvedPlaceholder}</span>
           <span className="flex shrink-0 items-center gap-1">
             {clearable && selected && !disabled ? (
               <span
                 role="button"
                 tabIndex={-1}
-                aria-label="Clear selection"
+                aria-label={t('ล้างที่เลือก', 'Clear selection')}
                 onClick={(event) => {
                   event.stopPropagation()
                   onChange?.('', null)
@@ -177,7 +183,7 @@ export default function SearchableSelect({
                   aria-expanded="true"
                   aria-controls={listId}
                   aria-autocomplete="list"
-                  aria-label={searchPlaceholder}
+                  aria-label={resolvedSearchPlaceholder}
                   value={query}
                   onChange={(event) => {
                     setQuery(event.target.value)
@@ -200,7 +206,7 @@ export default function SearchableSelect({
                       close(false)
                     }
                   }}
-                  placeholder={searchPlaceholder}
+                  placeholder={resolvedSearchPlaceholder}
                   className="w-full bg-transparent text-sm font-medium text-slate-700 outline-none placeholder:text-slate-400"
                 />
               </div>
@@ -213,8 +219,10 @@ export default function SearchableSelect({
               >
                 {filtered.length === 0 ? (
                   <div className="px-3 py-8 text-center">
-                    <p className="text-xs font-semibold text-slate-500">{emptyText}</p>
-                    <p className="mt-1 text-[11px] text-slate-400">ลองพิมพ์คำอื่นหรือล้างคำค้นหา</p>
+                    <p className="text-xs font-semibold text-slate-500">{resolvedEmptyText}</p>
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      {t('ลองพิมพ์คำอื่นหรือล้างคำค้นหา', 'Try another keyword or clear the search')}
+                    </p>
                   </div>
                 ) : (
                   filtered.map((option, index) => {

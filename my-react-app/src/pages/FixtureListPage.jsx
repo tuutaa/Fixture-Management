@@ -11,15 +11,16 @@ import {
   Spinner,
   StatCard,
 } from '../components/ui/Card'
-import { FixtureStatusBadge } from '../components/ui/Badge'
+import { fixtureTone } from '../lib/constants'
 import { Input } from '../components/ui/Field'
 import Tabs from '../components/ui/Tabs'
 import Button from '../components/ui/Button'
 import DataTable from '../components/ui/DataTable'
 import Modal from '../components/ui/Modal'
 import SearchableSelect from '../components/ui/SearchableSelect'
-import { formatDateTime } from '../lib/format'
+import { cn, formatDateTime } from '../lib/format'
 import { useToast } from '../components/ui/Toast'
+import { useLabels, useServerMessage } from '../lib/i18n'
 
 /* Preferred column order for the fixture-list matrix. */
 const POSITION_ORDER = [
@@ -122,7 +123,25 @@ const normPosition = (value) =>
     .trim()
     .toLowerCase()
 
+/* Mirrors the shared status chip markup, with a translated label. */
+const StatusBadge = ({ status, label }) => {
+  const tone = fixtureTone(status)
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-bold ring-1 ring-inset',
+        tone.chip,
+      )}
+    >
+      <span className={cn('h-1.5 w-1.5 rounded-full', tone.dot)} />
+      {label}
+    </span>
+  )
+}
+
 export default function FixtureListPage() {
+  const { t, fixtureStatus } = useLabels()
+  const sm = useServerMessage()
   const [docs, setDocs] = useState([])
   const [flat, setFlat] = useState([])
   const [details, setDetails] = useState([])
@@ -156,11 +175,11 @@ export default function FixtureListPage() {
       setStats(statsResult && typeof statsResult.total === 'number' ? statsResult : null)
       setOptions({ lines: opts.lines || [], models: opts.models || [] })
     } catch (err) {
-      setError(err.message)
+      setError(sm(err.message))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [sm])
 
   const handleImportFile = async (event) => {
     const file = event.target.files?.[0]
@@ -175,13 +194,19 @@ export default function FixtureListPage() {
       const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false })
       const items = buildFixtureListItems(rows)
       if (!items.length) {
-        throw new Error('ไม่พบ Fixture List ในไฟล์ Excel')
+        throw new Error(t('ไม่พบ Fixture List ในไฟล์ Excel', 'No fixture list found in the Excel file'))
       }
       const res = await api.importFixtureList(items)
       await load()
-      toast.success(res?.message || `นำเข้าข้อมูลเรียบร้อย ${items.length} รายการ`)
+      toast.success(
+        res?.message
+          ? sm(res.message)
+          : t(`นำเข้าข้อมูลเรียบร้อย ${items.length} รายการ`, `Imported ${items.length} item(s) successfully`),
+      )
     } catch (err) {
-      toast.error(err?.message || 'Import Fixture List ไม่สำเร็จ')
+      toast.error(
+        err?.message ? sm(err.message) : t('นำเข้า Fixture List ไม่สำเร็จ', 'Failed to import the fixture list'),
+      )
     } finally {
       setImporting(false)
       if (importInputRef.current) importInputRef.current.value = ''
@@ -285,7 +310,9 @@ export default function FixtureListPage() {
 
       for (const info of doc.fixtureInfo || []) {
         const raw = String(info.position || '').trim()
-        const key = raw ? canonical.get(normPosition(raw)) || raw : 'ไม่ระบุ Position'
+        const key = raw
+          ? canonical.get(normPosition(raw)) || raw
+          : t('ไม่ระบุ Position', 'Unspecified position')
         if (raw && !canonical.has(normPosition(raw)) && !extras.includes(key)) extras.push(key)
 
         const process = String(info.process || '').trim()
@@ -319,86 +346,86 @@ export default function FixtureListPage() {
     )
 
     return { rows, positions: [...POSITION_ORDER, ...extras], processBy, countBy, standardBy }
-  }, [docs, lineFilter, modelFilter, needle])
+  }, [docs, lineFilter, modelFilter, needle, t])
 
   const openDetail = (sn) => setActive(detailMap.get(sn) || { sn })
 
   const flatColumns = [
     {
       key: 'sn',
-      header: 'Serial Number',
+      header: t('Serial Number', 'Serial Number'),
       render: (row) => (
         <span className="font-mono text-xs font-black text-slate-800">{row.sn}</span>
       ),
     },
     {
       key: 'type',
-      header: 'Type',
+      header: t('Type', 'Type'),
       render: (row) => (
         <span className="text-[11px] text-slate-600">{row.type || '-'}</span>
       ),
     },
     {
       key: 'line',
-      header: 'Line',
+      header: t('Line', 'Line'),
       render: (row) => (
         <span className="text-xs font-semibold text-slate-700">{row.line || '-'}</span>
       ),
     },
     {
       key: 'model',
-      header: 'Model',
+      header: t('Model', 'Model'),
       render: (row) => (
         <span className="font-mono text-[10px] text-slate-600">{row.model || '-'}</span>
       ),
     },
     {
       key: 'step',
-      header: 'Step',
+      header: t('Step', 'Step'),
       render: (row) => (
         <span className="text-xs text-slate-600">{row.step || '-'}</span>
       ),
     },
     {
       key: 'process',
-      header: 'Process',
+      header: t('Process', 'Process'),
       render: (row) => (
         <span className="text-[11px] text-slate-600">{row.process || '-'}</span>
       ),
     },
     {
       key: 'position',
-      header: 'Position',
+      header: t('Position', 'Position'),
       render: (row) => <span className="text-[11px] text-slate-600">{row.position || '-'}</span>,
     },
     {
       key: 'storage',
-      header: 'Storage',
+      header: t('ตำแหน่งเก็บ', 'Storage'),
       render: (row) => (
         <span className="text-[11px] font-medium text-slate-700">{row.usage?.storage || row.storage || '-'}</span>
       ),
     },
     {
       key: 'fixtureBase',
-      header: 'Fixture Base',
+      header: t('Fixture Base', 'Fixture Base'),
       render: (row) => (
         <span className="font-mono text-[10px] text-slate-600">{row.fixtureBase || '-'}</span>
       ),
     },
     {
       key: 'status',
-      header: 'Status',
+      header: t('สถานะ', 'Status'),
       align: 'center',
-      render: (row) => <FixtureStatusBadge status={row.status} />,
+      render: (row) => <StatusBadge status={row.status} label={fixtureStatus(row.status)} />,
     },
   ]
 
   return (
     <div className="space-y-4">
       <PageHeader
-        eyebrow="Fixture"
+        eyebrow={t('Fixture', 'Fixture')}
         icon={Boxes}
-        title="Fixture List"
+        title={t('รายการ Fixture', 'Fixture list')}
         actions={
           <>
             <input
@@ -414,17 +441,19 @@ export default function FixtureListPage() {
               disabled={importing}
               onClick={() => importInputRef.current?.click()}
             >
-              {importing ? 'กำลัง Import…' : 'Import Fixture List (Excel)'}
+              {importing
+                ? t('กำลังนำเข้า…', 'Importing…')
+                : t('นำเข้ารายการ Fixture (Excel)', 'Import fixture list (Excel)')}
             </Button>
           </>
         }
       />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Fixture" value={kpi.total.toLocaleString()} hint="Fixture ทั้งหมดในระบบ" icon={Boxes} tone="blue" />
-        <StatCard label="In Use" value={kpi.inUse.toLocaleString()} hint="ติดตั้งใช้งานอยู่ที่ไลน์ผลิต" icon={Activity} tone="red" />
-        <StatCard label="In Stock" value={kpi.inStock.toLocaleString()} hint="พร้อมใช้งานในคลัง" icon={PackageCheck} tone="emerald" />
-        <StatCard label="PM & Maintenance" value={kpi.maintenance.toLocaleString()} hint="รอ PM / ซ่อมบำรุง" icon={Wrench} tone="orange" />
+        <StatCard label={t('Fixture', 'Fixture')} value={kpi.total.toLocaleString()} hint={t('Fixture ทั้งหมดในระบบ', 'All fixtures in the system')} icon={Boxes} tone="blue" />
+        <StatCard label={fixtureStatus('In Use')} value={kpi.inUse.toLocaleString()} hint={t('ติดตั้งใช้งานอยู่ที่ไลน์ผลิต', 'Installed and in use on the production line')} icon={Activity} tone="red" />
+        <StatCard label={fixtureStatus('In Stock')} value={kpi.inStock.toLocaleString()} hint={t('พร้อมใช้งานในคลัง', 'Ready for use in stock')} icon={PackageCheck} tone="emerald" />
+        <StatCard label={t('PM และซ่อมบำรุง', 'PM & Maintenance')} value={kpi.maintenance.toLocaleString()} hint={t('รอ PM / ซ่อมบำรุง', 'Awaiting PM / maintenance')} icon={Wrench} tone="orange" />
       </div>
 
       <Card className="p-4">
@@ -434,45 +463,48 @@ export default function FixtureListPage() {
             onChange={setView}
             size="sm"
             tabs={[
-              { value: 'fixture', label: 'Fixture' },
-              { value: 'list', label: 'Fixture List' },
+              { value: 'fixture', label: t('Fixture', 'Fixture') },
+              { value: 'list', label: t('รายการ Fixture', 'Fixture list') },
             ]}
           />
           <p className="text-[11px] font-semibold text-slate-400">
             {view === 'fixture'
-              ? `${flatFiltered.length.toLocaleString()} รายการ`
-              : `${matrix.rows.length.toLocaleString()} Model · ${matrix.positions.length.toLocaleString()} Position`}
+              ? t(`${flatFiltered.length.toLocaleString()} รายการ`, `${flatFiltered.length.toLocaleString()} item(s)`)
+              : t(
+                  `${matrix.rows.length.toLocaleString()} Model · ${matrix.positions.length.toLocaleString()} Position`,
+                  `${matrix.rows.length.toLocaleString()} model(s) · ${matrix.positions.length.toLocaleString()} position(s)`,
+                )}
           </p>
         </div>
 
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
           <div>
-            <p className="field-label">Line</p>
+            <p className="field-label">{t('Line', 'Line')}</p>
             <SearchableSelect
               value={lineFilter}
               onChange={setLineFilter}
               options={options.lines.map((line) => ({ value: line, label: line }))}
-              placeholder="ทุก Line"
+              placeholder={t('ทุก Line', 'All lines')}
               clearable
             />
           </div>
           <div>
-            <p className="field-label">Model</p>
+            <p className="field-label">{t('Model', 'Model')}</p>
             <SearchableSelect
               value={modelFilter}
               onChange={setModelFilter}
               options={options.models.map((model) => ({ value: model, label: model }))}
-              placeholder="ทุก Model"
+              placeholder={t('ทุก Model', 'All models')}
               clearable
             />
           </div>
           <div>
-            <p className="field-label">ค้นหา</p>
+            <p className="field-label">{t('ค้นหา', 'Search')}</p>
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
               <Input
                 className="field-input-sm pl-9"
-                placeholder="SN / Model / Position..."
+                placeholder={t('SN / Model / Position...', 'SN / Model / Position...')}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
               />
@@ -483,7 +515,7 @@ export default function FixtureListPage() {
 
       {loading ? (
         <Card>
-          <Spinner />
+          <Spinner label={t('กำลังโหลด…', 'Loading…')} />
         </Card>
       ) : error ? (
         <Card>
@@ -498,25 +530,25 @@ export default function FixtureListPage() {
             pageSize={50}
             dense
             emptyIcon={Boxes}
-            emptyTitle="ไม่พบ Fixture"
+            emptyTitle={t('ไม่พบ Fixture', 'No fixtures found')}
             onRowClick={(row) => setActive(row)}
           />
         </Card>
       ) : matrix.rows.length === 0 ? (
         <Card>
-          <EmptyState icon={Boxes} title="ไม่พบ Fixture List" />
+          <EmptyState icon={Boxes} title={t('ไม่พบรายการ Fixture', 'No fixture list found')} />
         </Card>
       ) : (
         <Card className="overflow-hidden">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/60 px-4 py-3">
             <div>
-              <p className="text-xs font-black text-slate-800">Fixture List by Model</p>
+              <p className="text-xs font-black text-slate-800">{t('รายการ Fixture แยกตาม Model', 'Fixture list by model')}</p>
               <p className="text-[10px] text-slate-400">
-                แต่ละคอลัมน์คือ Fixture Position · แถวคือ Line + Model
+                {t('แต่ละคอลัมน์คือ Fixture Position · แถวคือ Line + Model', 'Each column is a fixture position · each row is a line + model')}
               </p>
             </div>
             <span className="rounded-lg bg-white px-2.5 py-1 text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">
-              {matrix.rows.length.toLocaleString()} Model
+              {t(`${matrix.rows.length.toLocaleString()} Model`, `${matrix.rows.length.toLocaleString()} model(s)`)}
             </span>
           </div>
 
@@ -525,10 +557,10 @@ export default function FixtureListPage() {
               <thead>
                 <tr>
                   <th className="sticky left-0 top-0 z-40 w-[72px] min-w-[72px] border-b border-r border-slate-200 bg-slate-50 px-2 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
-                    Line
+                    {t('Line', 'Line')}
                   </th>
                   <th className="sticky left-[72px] top-0 z-40 w-[170px] min-w-[170px] border-b border-r border-slate-200 bg-slate-50 px-2 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
-                    Model
+                    {t('Model', 'Model')}
                   </th>
                   {matrix.positions.map((position) => {
                     const processes = [...(matrix.processBy.get(position) || [])]
@@ -538,7 +570,10 @@ export default function FixtureListPage() {
                       <th
                         key={position}
                         className="sticky top-0 z-20 min-w-[120px] max-w-[140px] border-b border-r border-slate-200 bg-slate-50 px-2 py-2 align-top"
-                        title={`SN ที่ลงทะเบียน ${count.toLocaleString()} · จำนวนที่ใช้จริงต่อ fixture base ${standard.toLocaleString()}`}
+                        title={t(
+                          `SN ที่ลงทะเบียน ${count.toLocaleString()} · จำนวนที่ใช้จริงต่อ fixture base ${standard.toLocaleString()}`,
+                          `Registered SN ${count.toLocaleString()} · actual usage per fixture base ${standard.toLocaleString()}`,
+                        )}
                       >
                         <div className="space-y-1">
                           <p className="text-[10px] font-bold leading-tight text-slate-700">{position}</p>
@@ -552,7 +587,7 @@ export default function FixtureListPage() {
                             <span className="text-blue-600">{count.toLocaleString()}</span>
                             {standard > 0 ? (
                               <span className="font-semibold text-slate-400">
-                                / ใช้ {standard.toLocaleString()}
+                                {t(`/ ใช้ ${standard.toLocaleString()}`, `/ used ${standard.toLocaleString()}`)}
                               </span>
                             ) : null}
                           </p>
@@ -609,7 +644,7 @@ export default function FixtureListPage() {
       <Modal
         open={Boolean(active)}
         onClose={() => setActive(null)}
-        title={active ? active.sn : 'Fixture'}
+        title={active ? active.sn : t('Fixture', 'Fixture')}
         subtitle={active ? `${active.line || '-'} · ${active.model || '-'}` : ''}
         icon={Boxes}
         size="lg"
@@ -617,20 +652,20 @@ export default function FixtureListPage() {
         {active ? (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
-              <FixtureStatusBadge status={active.status} />
+              <StatusBadge status={active.status} label={fixtureStatus(active.status)} />
             </div>
-            <InfoRow label="Line" value={active.line} />
-            <InfoRow label="Model" value={active.model} />
-            <InfoRow label="Step" value={active.step} />
-            <InfoRow label="Process" value={active.process} />
-            <InfoRow label="Position" value={active.position} />
-            <InfoRow label="Type" value={active.type} />
-            <InfoRow label="Storage" value={active.usage?.storage || active.storage} />
-            <InfoRow label="Fixture Base" value={active.fixtureBase} mono />
-            <InfoRow label="Usage" value={`${active.usage?.current || 0} / ${active.usage?.max || 0}`} />
-            <InfoRow label="Exp" value={active.usage?.exp || '-'} />
-            <InfoRow label="Revision" value={active.revision} />
-            <InfoRow label="Registered Date" value={formatDateTime(active.registered?.date)} />
+            <InfoRow label={t('Line', 'Line')} value={active.line} />
+            <InfoRow label={t('Model', 'Model')} value={active.model} />
+            <InfoRow label={t('Step', 'Step')} value={active.step} />
+            <InfoRow label={t('Process', 'Process')} value={active.process} />
+            <InfoRow label={t('Position', 'Position')} value={active.position} />
+            <InfoRow label={t('Type', 'Type')} value={active.type} />
+            <InfoRow label={t('ตำแหน่งเก็บ', 'Storage')} value={active.usage?.storage || active.storage} />
+            <InfoRow label={t('Fixture Base', 'Fixture Base')} value={active.fixtureBase} mono />
+            <InfoRow label={t('Usage', 'Usage')} value={`${active.usage?.current || 0} / ${active.usage?.max || 0}`} />
+            <InfoRow label={t('Exp', 'Exp')} value={active.usage?.exp || '-'} />
+            <InfoRow label={t('Revision', 'Revision')} value={active.revision} />
+            <InfoRow label={t('วันที่ลงทะเบียน', 'Registered date')} value={formatDateTime(active.registered?.date)} />
           </div>
         ) : null}
       </Modal>

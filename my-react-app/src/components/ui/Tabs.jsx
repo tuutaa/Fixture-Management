@@ -1,10 +1,12 @@
 import { cn } from '../../lib/format'
+import { useLanguage } from '../../context/LanguageContext'
 
 export default function Tabs({ tabs, value, onChange, className, size = 'md' }) {
+  const { t } = useLanguage()
   return (
     <div
       role="tablist"
-      aria-label="Sections"
+      aria-label={t('ส่วนต่างๆ', 'Sections')}
       className={cn(
         'inline-flex max-w-full items-center gap-1 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-1 shadow-sm',
         className,

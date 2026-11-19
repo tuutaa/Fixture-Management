@@ -64,16 +64,18 @@ export function formatTime(value, fallback = '-') {
   }).format(date)
 }
 
-export function formatDuration(ms) {
+export function formatDuration(ms, t = (th) => th) {
   if (!ms || ms < 0) return '-'
   const totalMinutes = Math.floor(ms / 60000)
-  if (totalMinutes < 1) return `${Math.max(1, Math.round(ms / 1000))} วิ`
-  if (totalMinutes < 60) return `${totalMinutes} นาที`
+  if (totalMinutes < 1) {
+    return `${Math.max(1, Math.round(ms / 1000))} ${t('วิ', 'sec')}`
+  }
+  if (totalMinutes < 60) return `${totalMinutes} ${t('นาที', 'min')}`
   const hours = Math.floor(totalMinutes / 60)
   const minutes = totalMinutes % 60
-  if (hours < 24) return `${hours} ชม. ${minutes} น.`
+  if (hours < 24) return `${hours} ${t('ชม.', 'hr')} ${minutes} ${t('น.', 'min')}`
   const days = Math.floor(hours / 24)
-  return `${days} วัน ${hours % 24} ชม.`
+  return `${days} ${t('วัน', 'days')} ${hours % 24} ${t('ชม.', 'hr')}`
 }
 
 export function daysUntil(value) {

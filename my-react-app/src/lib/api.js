@@ -108,10 +108,18 @@ export const api = {
     request(`/requests/${encodeURIComponent(requestId)}/reject`, { method: 'PUT', body: { user } }),
   completeRequest: (requestId, user) =>
     request(`/requests/${encodeURIComponent(requestId)}/complete`, { method: 'PUT', body: { user } }),
-  returnRequest: (requestId, items, user) =>
-    request(`/requests/${encodeURIComponent(requestId)}/return`, { method: 'PUT', body: { items, user } }),
-  issueRequest: (requestId, items, user) =>
-    request(`/requests/${encodeURIComponent(requestId)}/issue`, { method: 'PUT', body: { items, user } }),
+  scanPlan: (requestId) =>
+    request(`/requests/${encodeURIComponent(requestId)}/scan-plan`),
+  scanRequest: (requestId, sn, user) =>
+    request(`/requests/${encodeURIComponent(requestId)}/scan`, {
+      method: 'POST',
+      body: { sn, user },
+    }),
+  confirmScan: (requestId, user) =>
+    request(`/requests/${encodeURIComponent(requestId)}/confirm-scan`, {
+      method: 'POST',
+      body: { user },
+    }),
   breakdownRequest: (requestId, action, sn, user) =>
     request(`/requests/${encodeURIComponent(requestId)}/breakdown`, {
       method: 'PUT',

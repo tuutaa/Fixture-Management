@@ -1,5 +1,7 @@
 import { Loader2, PackageOpen, RefreshCw } from 'lucide-react'
 import { cn } from '../../lib/format'
+import { useLanguage } from '../../context/LanguageContext'
+import { useServerMessage } from '../../lib/i18n'
 
 export function Card({ className, children, ...props }) {
   return (
@@ -124,11 +126,12 @@ export function InfoRow({ label, value, className, mono = false }) {
   )
 }
 
-export function Spinner({ className, label = 'กำลังโหลดข้อมูล…' }) {
+export function Spinner({ className, label }) {
+  const { t } = useLanguage()
   return (
     <div className={cn('flex items-center justify-center gap-3 py-10 text-slate-400', className)}>
       <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
-      <span className="text-xs font-semibold">{label}</span>
+      <span className="text-xs font-semibold">{label ?? t('กำลังโหลดข้อมูล…', 'Loading…')}</span>
     </div>
   )
 }
@@ -147,16 +150,18 @@ export function EmptyState({ icon: Icon = PackageOpen, title, description, actio
 }
 
 export function ErrorState({ message, onRetry, className }) {
+  const { t } = useLanguage()
+  const sm = useServerMessage()
   return (
     <div className={cn('flex flex-col items-center justify-center gap-3 px-6 py-12 text-center', className)}>
       <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-red-50 text-red-500">
         <RefreshCw className="h-6 w-6" />
       </div>
-      <p className="text-sm font-semibold text-slate-700">โหลดข้อมูลไม่สำเร็จ</p>
-      <p className="max-w-md text-xs text-slate-500">{message}</p>
+      <p className="text-sm font-semibold text-slate-700">{t('โหลดข้อมูลไม่สำเร็จ', 'Failed to load data')}</p>
+      <p className="max-w-md text-xs text-slate-500">{sm(message)}</p>
       {onRetry ? (
         <button onClick={onRetry} className="btn-secondary mt-2 px-4 py-2 text-xs">
-          <RefreshCw className="h-3.5 w-3.5" /> ลองใหม่
+          <RefreshCw className="h-3.5 w-3.5" /> {t('ลองใหม่', 'Retry')}
         </button>
       ) : null}
     </div>

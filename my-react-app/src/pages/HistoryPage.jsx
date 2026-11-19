@@ -23,6 +23,7 @@ import { Badge } from '../components/ui/Badge'
 import { Input, NativeSelect } from '../components/ui/Field'
 import Button from '../components/ui/Button'
 import { formatDateTime, formatTime, parseDate } from '../lib/format'
+import { useLabels, useServerMessage } from '../lib/i18n'
 
 const ACTION_TONE = {
   Register: 'blue',
@@ -70,16 +71,16 @@ const dateKey = (value) => {
   ).padStart(2, '0')}`
 }
 
-const dateLabel = (key) => {
-  if (key === 'unknown') return 'ไม่ระบุวันที่'
+const dateLabel = (key, t) => {
+  if (key === 'unknown') return t('ไม่ระบุวันที่', 'Unknown date')
   const date = new Date(`${key}T00:00:00`)
   if (Number.isNaN(date.getTime())) return key
   const today = new Date()
   const todayKey = dateKey(today)
   const yesterday = new Date()
   yesterday.setDate(yesterday.getDate() - 1)
-  if (key === todayKey) return 'วันนี้ · Today'
-  if (key === dateKey(yesterday)) return 'เมื่อวาน · Yesterday'
+  if (key === todayKey) return t('วันนี้', 'Today')
+  if (key === dateKey(yesterday)) return t('เมื่อวาน', 'Yesterday')
   return new Intl.DateTimeFormat('en-GB', {
     weekday: 'short',
     day: '2-digit',
@@ -89,12 +90,36 @@ const dateLabel = (key) => {
 }
 
 export default function HistoryPage() {
+  const { t } = useLabels()
+  const sm = useServerMessage()
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [action, setAction] = useState('')
   const [applied, setApplied] = useState({ q: '', action: '' })
+
+  const actionLabel = (value) => {
+    const labels = {
+      Register: t('ลงทะเบียน', 'Register'),
+      Request: t('คำขอ', 'Request'),
+      Accept: t('รับงาน', 'Accept'),
+      Issue: t('จ่าย', 'Issue'),
+      'Issue Spare': t('จ่าย Spare', 'Issue Spare'),
+      Breakdown: t('เสีย', 'Breakdown'),
+      Verify: t('ตรวจสอบ', 'Verify'),
+      Return: t('คืน', 'Return'),
+      Edit: t('แก้ไข', 'Edit'),
+      'Plan PM': t('วางแผน PM', 'Plan PM'),
+      '4M Approve': t('อนุมัติ 4M', '4M Approve'),
+      '4M Assign': t('มอบหมาย 4M', '4M Assign'),
+      'PM OK': t('PM OK', 'PM OK'),
+      'PM NG': t('PM NG', 'PM NG'),
+      Order: t('Order', 'Order'),
+      Delete: t('ลบ', 'Delete'),
+    }
+    return labels[value] || value
+  }
 
   const load = useCallback(async (filters) => {
     try {
@@ -150,38 +175,38 @@ export default function HistoryPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Records"
+        eyebrow={t('บันทึก', 'Records')}
         icon={HistoryIcon}
-        title="History"
+        title={t('ประวัติ', 'History')}
         
         actions={
           <Button variant="secondary" icon={RefreshCw} onClick={() => load(applied)} disabled={loading}>
-            รีเฟรช
+            {t('รีเฟรช', 'Refresh')}
           </Button>
         }
       />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
-          label="รายการที่แสดง"
+          label={t('รายการที่แสดง', 'Records shown')}
           value={filtered.length}
-          hint={`สูงสุด 300 รายการล่าสุด`}
+          hint={t('สูงสุด 300 รายการล่าสุด', 'Latest 300 records max')}
           icon={HistoryIcon}
           tone="blue"
         />
-        <StatCard label="วันนี้" value={stats.today}  icon={FileClock} tone="emerald" />
-        <StatCard label="Fixture ที่เกี่ยวข้อง" value={stats.fixtures}  icon={Boxes} tone="orange" />
-        <StatCard label="Action ที่เกิดขึ้น" value={stats.actions}  icon={Tag} tone="purple" />
+        <StatCard label={t('วันนี้', 'Today')} value={stats.today}  icon={FileClock} tone="emerald" />
+        <StatCard label={t('Fixture ที่เกี่ยวข้อง', 'Related Fixtures')} value={stats.fixtures}  icon={Boxes} tone="orange" />
+        <StatCard label={t('Action ที่เกิดขึ้น', 'Actions recorded')} value={stats.actions}  icon={Tag} tone="purple" />
       </div>
 
       <Card className="p-4 sm:p-5">
         <SectionHeader
           icon={HistoryIcon}
-          title={applied.q ? `ผลการค้นหา “${applied.q}”` : 'ประวัติการทำรายการ'}
+          title={applied.q ? t(`ผลการค้นหา “${applied.q}”`, `Search results for “${applied.q}”`) : t('ประวัติการทำรายการ', 'Transaction History')}
           description={
             applied.action
-              ? `กรองเฉพาะ action: ${applied.action}`
-              : 'ค้นหาได้จาก SN, Request ID, Action, รายละเอียด หรือชื่อผู้ทำรายการ'
+              ? `${t('กรองเฉพาะ action: ', 'Filter action: ')}${actionLabel(applied.action)}`
+              : t('ค้นหาได้จาก SN, Request ID, Action, รายละเอียด หรือชื่อผู้ทำรายการ', 'Search by SN, Request ID, Action, details or operator name')
           }
           className="mb-4"
         />
@@ -190,26 +215,26 @@ export default function HistoryPage() {
             <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <Input
               className="pl-10"
-              placeholder="ค้นหา SN / Request ID / รายละเอียด / ชื่อ…"
+              placeholder={t('ค้นหา SN / Request ID / รายละเอียด / ชื่อ…', 'Search SN / Request ID / details / name…')}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
           </div>
           <NativeSelect value={action} onChange={(event) => setAction(event.target.value)}>
-            <option value="">ทุก Action</option>
+            <option value="">{t('ทุก Action', 'All Actions')}</option>
             {ACTION_FILTERS.map((item) => (
               <option key={item} value={item}>
-                {item}
+                {actionLabel(item)}
               </option>
             ))}
           </NativeSelect>
           <div className="flex gap-2">
             <Button type="submit" icon={Search} disabled={loading}>
-              ค้นหา
+              {t('ค้นหา', 'Search')}
             </Button>
             {applied.q || applied.action ? (
               <Button type="button" variant="ghost" icon={X} onClick={reset}>
-                ล้าง
+                {t('ล้าง', 'Clear')}
               </Button>
             ) : null}
           </div>
@@ -218,22 +243,22 @@ export default function HistoryPage() {
 
       {loading ? (
         <Card>
-          <Spinner label="กำลังโหลดประวัติ…" />
+          <Spinner label={t('กำลังโหลดประวัติ…', 'Loading history…')} />
         </Card>
       ) : error ? (
         <Card>
-          <ErrorState message={error} onRetry={() => load(applied)} />
+          <ErrorState message={sm(error)} onRetry={() => load(applied)} />
         </Card>
       ) : filtered.length === 0 ? (
         <Card>
           <EmptyState
             icon={Activity}
-            title={applied.q || applied.action ? 'ไม่พบประวัติที่ตรงกับเงื่อนไข' : 'ยังไม่มีประวัติการทำรายการ'}
+            title={applied.q || applied.action ? t('ไม่พบประวัติที่ตรงกับเงื่อนไข', 'No matching history found') : t('ยังไม่มีประวัติการทำรายการ', 'No transaction history yet')}
             
             action={
               applied.q || applied.action ? (
                 <Button variant="secondary" onClick={reset}>
-                  ล้างตัวกรอง
+                  {t('ล้างตัวกรอง', 'Clear filters')}
                 </Button>
               ) : null
             }
@@ -245,10 +270,10 @@ export default function HistoryPage() {
             <Card key={key} className="overflow-hidden">
               <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/70 px-4 py-2.5">
                 <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">
-                  {dateLabel(key)}
+                  {dateLabel(key, t)}
                 </p>
                 <span className="rounded-md bg-white px-2 py-0.5 text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">
-                  {items.length} รายการ
+                  {items.length} {t('รายการ', 'records')}
                 </span>
               </div>
               <ol className="divide-y divide-slate-100">
@@ -259,7 +284,7 @@ export default function HistoryPage() {
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <Badge tone={ACTION_TONE[item.action] || 'slate'}>{item.action || '-'}</Badge>
+                        <Badge tone={ACTION_TONE[item.action] || 'slate'}>{item.action ? actionLabel(item.action) : '-'}</Badge>
                         {item.sn ? (
                           <button
                             type="button"
@@ -268,7 +293,7 @@ export default function HistoryPage() {
                               setApplied({ q: item.sn, action })
                             }}
                             className="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-bold text-slate-700 hover:bg-blue-50 hover:text-blue-700"
-                            title="กรองเฉพาะ SN นี้"
+                            title={t('กรองเฉพาะ SN นี้', 'Filter by this SN')}
                           >
                             {item.sn}
                           </button>
@@ -281,7 +306,7 @@ export default function HistoryPage() {
                               setApplied({ q: item.request_id, action })
                             }}
                             className="rounded-md bg-blue-50 px-2 py-0.5 font-mono text-[10px] font-bold text-blue-700 hover:bg-blue-100"
-                            title="กรองเฉพาะ Request นี้"
+                            title={t('กรองเฉพาะ Request นี้', 'Filter by this Request')}
                           >
                             {item.request_id}
                           </button>

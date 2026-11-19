@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle2, Info, X, XCircle } from 'lucide-react'
 import { cn } from '../../lib/format'
+import { useLanguage } from '../../context/LanguageContext'
 
 const ToastContext = createContext(null)
 
@@ -32,6 +33,7 @@ const TONES = {
 }
 
 export function ToastProvider({ children }) {
+  const { t } = useLanguage()
   const [toasts, setToasts] = useState([])
   const timers = useRef(new Map())
 
@@ -98,7 +100,7 @@ export function ToastProvider({ children }) {
               <button
                 type="button"
                 onClick={() => dismiss(toast.id)}
-                aria-label="Dismiss notification"
+                aria-label={t('ปิดการแจ้งเตือน', 'Dismiss notification')}
                 className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
               >
                 <X className="h-3.5 w-3.5" />
