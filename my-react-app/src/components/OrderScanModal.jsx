@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   ArrowRight,
   CheckCircle2,
   LockKeyhole,
   PackagePlus,
+  RotateCcw,
   ScanLine,
   Undo2,
   Wrench,
@@ -86,12 +87,14 @@ export default function OrderScanModal({ open, request, user, onClose, onDone })
   const toast = useToast()
   const { t, requestType } = useLabels()
   const sm = useServerMessage()
+  const snRef = useRef(null)
   const [current, setCurrent] = useState(request)
   const [plan, setPlan] = useState([])
   const [planLoading, setPlanLoading] = useState(false)
   const [sn, setSn] = useState('')
   const [busy, setBusy] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const [resetting, setResetting] = useState(false)
   const [error, setError] = useState('')
   const [lastResult, setLastResult] = useState(null)
 
@@ -101,8 +104,17 @@ export default function OrderScanModal({ open, request, user, onClose, onDone })
     setSn('')
     setError('')
     setLastResult(null)
+    setResetting(false)
     setPlan([])
   }, [open, request])
+
+  useEffect(() => {
+    if (!open || sn || busy || resetting) return undefined
+    const frame = window.requestAnimationFrame(() => {
+      snRef.current?.focus({ preventScroll: true })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [open, sn, busy, resetting])
 
   useEffect(() => {
     if (!open || !request) return undefined
@@ -138,11 +150,13 @@ export default function OrderScanModal({ open, request, user, onClose, onDone })
   const canScan = Boolean(assignee && assignee === actor)
 
   const scan = async () => {
+    const value = sn.trim().toUpperCase()
+    // Clear on every Enter so the next scan can be typed immediately.
+    setSn('')
     if (!canScan) {
       setError(t('เฉพาะช่างที่รับงานนี้เท่านั้นที่สแกนได้', 'Only the assigned technician can scan this job'))
       return
     }
-    const value = sn.trim().toUpperCase()
     if (!value) {
       setError(t('กรุณาสแกน Serial Number', 'Please scan a serial number'))
       return
@@ -153,13 +167,32 @@ export default function OrderScanModal({ open, request, user, onClose, onDone })
     try {
       const data = await api.scanRequest(current.request_id, value, user)
       setCurrent(data.request)
-      setSn('')
       setLastResult({ sn: value, message: data.message })
       toast.success(sm(data.message))
     } catch (err) {
       setError(sm(err.message))
     } finally {
       setBusy(false)
+    }
+  }
+
+  const reset = async () => {
+    if (!canScan || matches.length === 0) {
+      setError(t('ยังไม่มีรายการสแกนที่ต้องรีเซ็ต', 'There are no scans to reset'))
+      return
+    }
+    setResetting(true)
+    setError('')
+    setLastResult(null)
+    try {
+      const data = await api.resetScan(current.request_id, user)
+      setCurrent(data.request)
+      setSn('')
+      toast.success(sm(data.message))
+    } catch (err) {
+      setError(sm(err.message))
+    } finally {
+      setResetting(false)
     }
   }
 
@@ -207,7 +240,7 @@ export default function OrderScanModal({ open, request, user, onClose, onDone })
             variant="success"
             size="sm"
             onClick={confirm}
-            disabled={!canScan || !allMatched || planLoading || confirming}
+            disabled={!canScan || !allMatched || planLoading || confirming || resetting}
           >
             {confirming ? t('กำลังอัปเดต…', 'Updating…') : t('ตกลง', 'Confirm')}
           </Button>
@@ -259,6 +292,7 @@ export default function OrderScanModal({ open, request, user, onClose, onDone })
                 </p>
                 <div className="flex gap-2">
                   <Input
+                    ref={snRef}
                     className="font-mono"
                     value={sn}
                     onChange={(event) => setSn(event.target.value)}
@@ -266,7 +300,7 @@ export default function OrderScanModal({ open, request, user, onClose, onDone })
                     placeholder={t('สแกน / พิมพ์ Serial Number แล้วกด Enter', 'Scan / type the serial number then press Enter')}
                     autoFocus
                   />
-                  <Button size="sm" variant="primary" onClick={scan} disabled={busy}>
+                  <Button size="sm" variant="primary" onClick={scan} disabled={busy || resetting}>
                     {busy ? '…' : t('สแกน', 'Scan')}
                   </Button>
                 </div>
@@ -283,6 +317,21 @@ export default function OrderScanModal({ open, request, user, onClose, onDone })
               </div>
 
               {/* Expected fixtures: red until scanned & matched, then green */}
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">
+                  {t('รายการเบิก / รับคืน', 'Issue / return lists')}
+                </p>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon={RotateCcw}
+                  onClick={reset}
+                  disabled={!matches.length || busy || resetting || planLoading || confirming}
+                  title={t('รีเซ็ตรายการสแกนที่บันทึกไว้ทั้งหมด', 'Reset all recorded scans')}
+                >
+                  {resetting ? '…' : t('รีเซ็ตลิสต์', 'Reset lists')}
+                </Button>
+              </div>
               {planLoading ? (
                 <p className="py-6 text-center text-[11px] font-semibold text-slate-400">
                   {t('กำลังคำนวณรายการ Fixture…', 'Calculating fixture list…')}

@@ -1,24 +1,38 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, Boxes, PackageCheck, Search, Upload, Wrench } from 'lucide-react'
+import {
+  Activity,
+  Boxes,
+  PackageCheck,
+  RotateCcw,
+  Search,
+  TriangleAlert,
+  Upload,
+  Wrench,
+} from 'lucide-react'
 import api from '../lib/api'
 import { buildFixtureListItems } from '../lib/fixtureImport'
 import {
   Card,
   EmptyState,
   ErrorState,
-  InfoRow,
   PageHeader,
+  SectionHeader,
   Spinner,
   StatCard,
 } from '../components/ui/Card'
-import { fixtureTone } from '../lib/constants'
-import { Input } from '../components/ui/Field'
+import {
+  FIXTURE_STATUS_OPTIONS,
+  buildProcessTypeOptions,
+  fixtureTone,
+  processTypeLabel,
+} from '../lib/constants'
+import { FormField, Input } from '../components/ui/Field'
 import Tabs from '../components/ui/Tabs'
 import Button from '../components/ui/Button'
 import DataTable from '../components/ui/DataTable'
 import Modal from '../components/ui/Modal'
 import SearchableSelect from '../components/ui/SearchableSelect'
-import { cn, formatDateTime } from '../lib/format'
+import { cn } from '../lib/format'
 import { useToast } from '../components/ui/Toast'
 import { useLabels, useServerMessage } from '../lib/i18n'
 
@@ -123,6 +137,33 @@ const normPosition = (value) =>
     .trim()
     .toLowerCase()
 
+const EMPTY_FILTERS = {
+  line: '',
+  model: '',
+  status: '',
+  type: '',
+  step: '',
+  process: '',
+  position: '',
+  storage: '',
+  fixtureBase: '',
+  revision: '',
+}
+
+const valuesFor = (options, key) => (Array.isArray(options?.[key]) ? options[key] : [])
+
+const toOptions = (values, labelFn) =>
+  [...new Set((values || []).filter((value) => value !== '' && value !== null && value !== undefined))]
+    .sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' }))
+    .map((value) => ({ value, label: labelFn ? labelFn(value) : String(value) }))
+
+/* Mirrors Edit: Process narrows the Position dropdown. */
+const positionsForProcess = (options, processValue) => {
+  const byProcess = options?.positionByProcess
+  if (processValue && byProcess && Array.isArray(byProcess[processValue])) return byProcess[processValue]
+  return valuesFor(options, 'positions')
+}
+
 /* Mirrors the shared status chip markup, with a translated label. */
 const StatusBadge = ({ status, label }) => {
   const tone = fixtureTone(status)
@@ -146,40 +187,81 @@ export default function FixtureListPage() {
   const [flat, setFlat] = useState([])
   const [details, setDetails] = useState([])
   const [stats, setStats] = useState(null)
-  const [options, setOptions] = useState({ lines: [], models: [] })
+  const [detailOptions, setDetailOptions] = useState({})
+  const [storageLocations, setStorageLocations] = useState([])
+  const [fixtureRows, setFixtureRows] = useState([])
+  const [fixtureLoading, setFixtureLoading] = useState(false)
+  const [fixtureError, setFixtureError] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [view, setView] = useState('fixture')
   const [query, setQuery] = useState('')
-  const [lineFilter, setLineFilter] = useState('')
-  const [modelFilter, setModelFilter] = useState('')
-  const [active, setActive] = useState(null)
+  const [filters, setFilters] = useState(EMPTY_FILTERS)
+  const [appliedFilters, setAppliedFilters] = useState(EMPTY_FILTERS)
   const toast = useToast()
   const importInputRef = useRef(null)
   const [importing, setImporting] = useState(false)
+  const [pendingImport, setPendingImport] = useState(null)
 
   const load = useCallback(async () => {
     try {
       setLoading(true)
       setError('')
-      const [rawDocs, flatRows, detailRows, opts, statsResult] = await Promise.all([
+      const [rawDocs, flatRows, detailRows, statsResult, detailOpts, storages] = await Promise.all([
         api.fixtureList(),
         api.fixtures(),
         api.fixtureDetails().catch(() => []),
-        api.fixtureOptions(),
         api.fixtureStats().catch(() => null),
+        api.editFixtureOptions().catch(() => ({})),
+        api.storages().catch(() => []),
       ])
       setDocs(Array.isArray(rawDocs) ? rawDocs : [])
       setFlat(Array.isArray(flatRows) ? flatRows : [])
       setDetails(Array.isArray(detailRows) ? detailRows : [])
       setStats(statsResult && typeof statsResult.total === 'number' ? statsResult : null)
-      setOptions({ lines: opts.lines || [], models: opts.models || [] })
+      setDetailOptions(detailOpts || {})
+      setStorageLocations(Array.isArray(storages) ? storages : [])
     } catch (err) {
       setError(sm(err.message))
     } finally {
       setLoading(false)
     }
   }, [sm])
+
+  const fetchFixtureRows = useCallback(
+    async (values = EMPTY_FILTERS) => {
+      setFixtureLoading(true)
+      setFixtureError('')
+      try {
+        const data = await api.editFixtures(values)
+        setFixtureRows(Array.isArray(data) ? data : [])
+      } catch (err) {
+        setFixtureRows([])
+        setFixtureError(sm(err.message))
+      } finally {
+        setFixtureLoading(false)
+      }
+    },
+    [sm],
+  )
+
+  const setFilter = (key, value) =>
+    setFilters((current) => {
+      const next = { ...current, [key]: value }
+      if (key === 'process' && value !== current.process) next.position = ''
+      return next
+    })
+
+  const runSearch = () => {
+    setAppliedFilters(filters)
+    fetchFixtureRows(filters)
+  }
+
+  const clearFilters = () => {
+    setFilters(EMPTY_FILTERS)
+    setAppliedFilters(EMPTY_FILTERS)
+    fetchFixtureRows(EMPTY_FILTERS)
+  }
 
   const handleImportFile = async (event) => {
     const file = event.target.files?.[0]
@@ -196,7 +278,16 @@ export default function FixtureListPage() {
       if (!items.length) {
         throw new Error(t('ไม่พบ Fixture List ในไฟล์ Excel', 'No fixture list found in the Excel file'))
       }
-      const res = await api.importFixtureList(items)
+      let res
+      try {
+        res = await api.importFixtureList(items)
+      } catch (err) {
+        if (err?.payload?.needsConfirm) {
+          setPendingImport({ items, issues: err.payload.issues || [], message: err.message })
+          return
+        }
+        throw err
+      }
       await load()
       toast.success(
         res?.message
@@ -213,9 +304,32 @@ export default function FixtureListPage() {
     }
   }
 
+  const confirmImport = async () => {
+    if (!pendingImport) return
+    setImporting(true)
+    try {
+      const res = await api.importFixtureList(pendingImport.items, true)
+      setPendingImport(null)
+      await load()
+      toast.success(
+        res?.message
+          ? sm(res.message)
+          : t('นำเข้าข้อมูลเรียบร้อย', 'Import complete'),
+      )
+    } catch (err) {
+      toast.error(sm(err.message))
+    } finally {
+      setImporting(false)
+    }
+  }
+
   useEffect(() => {
     load()
   }, [load])
+
+  useEffect(() => {
+    fetchFixtureRows(EMPTY_FILTERS)
+  }, [fetchFixtureRows])
 
   const needle = query.trim().toLowerCase()
 
@@ -258,41 +372,11 @@ export default function FixtureListPage() {
     }
   }, [stats, allFixtures])
 
-  const flatFiltered = useMemo(() => {
-    return allFixtures.filter((row) => {
-      if (lineFilter && row.line !== lineFilter) return false
-      if (modelFilter && row.model !== modelFilter) return false
-      if (!needle) return true
-      return [
-        row.sn,
-        row.type,
-        row.fixtureBase,
-        row.usage?.storage,
-        row.storage,
-        row.model,
-        row.line,
-        row.process,
-        row.position,
-        row.revision,
-      ]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(needle))
-    })
-  }, [allFixtures, lineFilter, modelFilter, needle])
-
-  const detailMap = useMemo(() => {
-    const map = new Map()
-    for (const fixture of allFixtures) {
-      if (fixture?.sn) map.set(fixture.sn, fixture)
-    }
-    return map
-  }, [allFixtures])
-
   const matrix = useMemo(() => {
     const filteredDocs = docs.filter(
       (doc) =>
-        (!lineFilter || doc.line === lineFilter) &&
-        (!modelFilter || doc.model === modelFilter),
+        (!appliedFilters.line || doc.line === appliedFilters.line) &&
+        (!appliedFilters.model || doc.model === appliedFilters.model),
     )
 
     const canonical = new Map(POSITION_ORDER.map((position) => [normPosition(position), position]))
@@ -346,9 +430,50 @@ export default function FixtureListPage() {
     )
 
     return { rows, positions: [...POSITION_ORDER, ...extras], processBy, countBy, standardBy }
-  }, [docs, lineFilter, modelFilter, needle, t])
+  }, [docs, appliedFilters.line, appliedFilters.model, needle, t])
 
-  const openDetail = (sn) => setActive(detailMap.get(sn) || { sn })
+  const statusValues = valuesFor(detailOptions, 'statuses').length
+    ? valuesFor(detailOptions, 'statuses')
+    : FIXTURE_STATUS_OPTIONS.map((option) => option.value)
+
+  const filterFields = useMemo(() => {
+    const fields = [
+      { key: 'line', label: t('Line', 'Line'), options: toOptions(valuesFor(detailOptions, 'lines')) },
+      { key: 'model', label: t('Model', 'Model'), options: toOptions(valuesFor(detailOptions, 'models')) },
+      {
+        key: 'status',
+        label: t('สถานะ', 'Status'),
+        options: toOptions(statusValues, (value) => fixtureStatus(value)),
+      },
+      {
+        key: 'type',
+        label: t('Process Type', 'Process Type'),
+        options: buildProcessTypeOptions(valuesFor(detailOptions, 'types')),
+      },
+      { key: 'step', label: t('Step', 'Step'), options: toOptions(valuesFor(detailOptions, 'steps')) },
+      { key: 'process', label: t('Process', 'Process'), options: toOptions(valuesFor(detailOptions, 'processes')) },
+      {
+        key: 'position',
+        label: t('Position', 'Position'),
+        options: toOptions(positionsForProcess(detailOptions, filters.process)),
+      },
+      {
+        key: 'storage',
+        label: t('ตำแหน่งเก็บ', 'Storage'),
+        options: toOptions([
+          ...valuesFor(detailOptions, 'storages'),
+          ...storageLocations.map((row) => row.location),
+        ]),
+      },
+      {
+        key: 'fixtureBase',
+        label: t('Fixture Base', 'Fixture Base'),
+        options: toOptions(valuesFor(detailOptions, 'fixtureBases')),
+      },
+      { key: 'revision', label: t('Revision', 'Revision'), options: toOptions(valuesFor(detailOptions, 'revisions')) },
+    ]
+    return fields
+  }, [detailOptions, fixtureStatus, filters.process, storageLocations, statusValues, t])
 
   const flatColumns = [
     {
@@ -360,9 +485,9 @@ export default function FixtureListPage() {
     },
     {
       key: 'type',
-      header: t('Type', 'Type'),
+      header: t('Process Type', 'Process Type'),
       render: (row) => (
-        <span className="text-[11px] text-slate-600">{row.type || '-'}</span>
+        <span className="text-[11px] text-slate-600">{processTypeLabel(row.type) || '-'}</span>
       ),
     },
     {
@@ -469,7 +594,7 @@ export default function FixtureListPage() {
           />
           <p className="text-[11px] font-semibold text-slate-400">
             {view === 'fixture'
-              ? t(`${flatFiltered.length.toLocaleString()} รายการ`, `${flatFiltered.length.toLocaleString()} item(s)`)
+              ? t(`${fixtureRows.length.toLocaleString()} รายการ`, `${fixtureRows.length.toLocaleString()} item(s)`)
               : t(
                   `${matrix.rows.length.toLocaleString()} Model · ${matrix.positions.length.toLocaleString()} Position`,
                   `${matrix.rows.length.toLocaleString()} model(s) · ${matrix.positions.length.toLocaleString()} position(s)`,
@@ -477,39 +602,47 @@ export default function FixtureListPage() {
           </p>
         </div>
 
-        <div className="mt-3 grid gap-3 sm:grid-cols-3">
-          <div>
-            <p className="field-label">{t('Line', 'Line')}</p>
-            <SearchableSelect
-              value={lineFilter}
-              onChange={setLineFilter}
-              options={options.lines.map((line) => ({ value: line, label: line }))}
-              placeholder={t('ทุก Line', 'All lines')}
-              clearable
-            />
+        <div className="mt-3 border-t border-slate-100 px-3 pt-3">
+          <SectionHeader title={t('กรองข้อมูล Fixture', 'Filter fixtures')} className="mb-2" />
+          <div className="grid gap-4 sm:grid-cols-3 md:grid-cols-5">
+            {filterFields.map((field) => (
+              <FormField key={field.key} label={field.label}>
+                <SearchableSelect
+                  value={filters[field.key]}
+                  onChange={(value) => setFilter(field.key, value)}
+                  options={field.options}
+                  placeholder={t('ทั้งหมด', 'All')}
+                  clearable
+                />
+              </FormField>
+            ))}
+            {view === 'list' ? (
+              <FormField label={t('ค้นหา', 'Search')} className="sm:col-span-2 lg:col-span-2">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                  <Input
+                    className="pl-9"
+                    placeholder={t('SN / Model / Position...', 'SN / Model / Position...')}
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                  />
+                </div>
+              </FormField>
+            ) : null}
           </div>
-          <div>
-            <p className="field-label">{t('Model', 'Model')}</p>
-            <SearchableSelect
-              value={modelFilter}
-              onChange={setModelFilter}
-              options={options.models.map((model) => ({ value: model, label: model }))}
-              placeholder={t('ทุก Model', 'All models')}
-              clearable
-            />
+          <div className="mt-4 flex flex-wrap items-center gap-2.5">
+            <Button icon={Search} onClick={runSearch} disabled={fixtureLoading}>
+              {fixtureLoading
+                ? t('กำลังค้นหา…', 'Searching…')
+                : t('Search', 'Search')}
+            </Button>
+            <Button variant="secondary" icon={RotateCcw} onClick={clearFilters} disabled={fixtureLoading}>
+              {t('ล้างตัวกรอง', 'Clear filters')}
+            </Button>
           </div>
-          <div>
-            <p className="field-label">{t('ค้นหา', 'Search')}</p>
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-              <Input
-                className="field-input-sm pl-9"
-                placeholder={t('SN / Model / Position...', 'SN / Model / Position...')}
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </div>
-          </div>
+          {fixtureError ? (
+            <p className="mt-2 text-[11px] font-semibold text-red-600">{fixtureError}</p>
+          ) : null}
         </div>
       </Card>
 
@@ -523,16 +656,19 @@ export default function FixtureListPage() {
         </Card>
       ) : view === 'fixture' ? (
         <Card className="overflow-hidden">
-          <DataTable
-            columns={flatColumns}
-            rows={flatFiltered}
-            rowKey={(row) => row.sn}
-            pageSize={50}
-            dense
-            emptyIcon={Boxes}
-            emptyTitle={t('ไม่พบ Fixture', 'No fixtures found')}
-            onRowClick={(row) => setActive(row)}
-          />
+          {fixtureLoading ? (
+            <Spinner label={t('กำลังโหลดข้อมูล Fixture…', 'Loading fixture data…')} />
+          ) : (
+            <DataTable
+              columns={flatColumns}
+              rows={fixtureRows}
+              rowKey={(row) => row.sn}
+              pageSize={50}
+              dense
+              emptyIcon={Boxes}
+              emptyTitle={t('ไม่พบ Fixture', 'No fixtures found')}
+            />
+          )}
         </Card>
       ) : matrix.rows.length === 0 ? (
         <Card>
@@ -618,15 +754,13 @@ export default function FixtureListPage() {
                           ) : (
                             <div className="space-y-0.5">
                               {sns.map((sn) => (
-                                <button
+                                <span
                                   key={sn}
-                                  type="button"
-                                  onClick={() => openDetail(sn)}
-                                  className="block max-w-[130px] truncate font-mono text-[10px] font-semibold text-blue-700 hover:underline"
+                                  className="block max-w-[130px] truncate font-mono text-[10px] font-semibold text-slate-600"
                                   title={sn}
                                 >
                                   {sn}
-                                </button>
+                                </span>
                               ))}
                             </div>
                           )}
@@ -642,30 +776,68 @@ export default function FixtureListPage() {
       )}
 
       <Modal
-        open={Boolean(active)}
-        onClose={() => setActive(null)}
-        title={active ? active.sn : t('Fixture', 'Fixture')}
-        subtitle={active ? `${active.line || '-'} · ${active.model || '-'}` : ''}
-        icon={Boxes}
+        open={Boolean(pendingImport)}
+        onClose={() => (importing ? null : setPendingImport(null))}
+        title={t('อัปเดตข้อมูล Fixture ก่อนนำเข้า', 'Update fixtures before import')}
+        subtitle={sm(pendingImport?.message || '')}
+        icon={TriangleAlert}
+        tone="orange"
         size="lg"
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setPendingImport(null)} disabled={importing}>
+              {t('ยกเลิก', 'Cancel')}
+            </Button>
+            <Button variant="warning" icon={Upload} onClick={confirmImport} disabled={importing}>
+              {importing
+                ? t('กำลังอัปเดต…', 'Updating…')
+                : t('อัปเดตและนำเข้า', 'Update and import')}
+            </Button>
+          </div>
+        }
       >
-        {active ? (
+        {pendingImport ? (
           <div className="space-y-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <StatusBadge status={active.status} label={fixtureStatus(active.status)} />
+            <p className="text-[11px] leading-relaxed text-slate-500">
+              {t(
+                'พบ Fixture ใน Base ที่นำเข้าซึ่งยังไม่มีหรือมี step/process/position ไม่ตรง กดยืนยันเพื่ออัปเดตข้อมูล Fixture เหล่านี้แล้วนำเข้าไฟล์ต่อ',
+                'Some fixtures in the imported bases are missing or have different step/process/position. Confirm to update those fixtures, then continue the import.',
+              )}
+            </p>
+            <div className="max-h-[300px] overflow-auto rounded-xl border border-slate-200">
+              <table className="w-full min-w-[640px] text-left text-[10px]">
+                <thead className="sticky top-0 bg-slate-50 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
+                  <tr>
+                    <th className="px-3 py-2">{t('Base', 'Base')}</th>
+                    <th className="px-3 py-2">{t('SN', 'SN')}</th>
+                    <th className="px-3 py-2">{t('ข้อมูลปัจจุบัน', 'Current')}</th>
+                    <th className="px-3 py-2">{t('ข้อมูลที่จะอัปเดต', 'Update to')}</th>
+                    <th className="px-3 py-2">{t('เหตุผล', 'Reason')}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {pendingImport.issues.map((issue) => (
+                    <tr key={issue.sn}>
+                      <td className="px-3 py-2 font-mono font-bold text-slate-600">{issue.base || '-'}</td>
+                      <td className="px-3 py-2 font-mono font-bold text-slate-800">{issue.sn}</td>
+                      <td className="px-3 py-2 text-slate-500">
+                        {[issue.current?.step, issue.current?.process, issue.current?.position].filter(Boolean).join(' · ') || '-'}
+                      </td>
+                      <td className="px-3 py-2 font-semibold text-blue-700">
+                        {[issue.desired?.step, issue.desired?.process, issue.desired?.position].filter(Boolean).join(' · ') || '-'}
+                      </td>
+                      <td className="px-3 py-2 font-bold text-orange-600">
+                        {issue.reason === 'missing'
+                          ? t('ยังไม่มีข้อมูล', 'Missing')
+                          : issue.reason === 'master'
+                            ? t('ไม่ตรง Master', 'Master mismatch')
+                            : t('ไม่ตรง Base', 'Base mismatch')}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-            <InfoRow label={t('Line', 'Line')} value={active.line} />
-            <InfoRow label={t('Model', 'Model')} value={active.model} />
-            <InfoRow label={t('Step', 'Step')} value={active.step} />
-            <InfoRow label={t('Process', 'Process')} value={active.process} />
-            <InfoRow label={t('Position', 'Position')} value={active.position} />
-            <InfoRow label={t('Type', 'Type')} value={active.type} />
-            <InfoRow label={t('ตำแหน่งเก็บ', 'Storage')} value={active.usage?.storage || active.storage} />
-            <InfoRow label={t('Fixture Base', 'Fixture Base')} value={active.fixtureBase} mono />
-            <InfoRow label={t('Usage', 'Usage')} value={`${active.usage?.current || 0} / ${active.usage?.max || 0}`} />
-            <InfoRow label={t('Exp', 'Exp')} value={active.usage?.exp || '-'} />
-            <InfoRow label={t('Revision', 'Revision')} value={active.revision} />
-            <InfoRow label={t('วันที่ลงทะเบียน', 'Registered date')} value={formatDateTime(active.registered?.date)} />
           </div>
         ) : null}
       </Modal>

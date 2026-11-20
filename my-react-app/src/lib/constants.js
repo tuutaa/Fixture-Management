@@ -106,6 +106,24 @@ export const PROCESS_TYPES = [
   { value: 'Function', label: 'Function' },
 ]
 
+/* Fixture `type` stores legacy lowercase values; display them like the Request page. */
+export const processTypeLabel = (value) => {
+  const raw = String(value ?? '').trim()
+  const found = PROCESS_TYPES.find((option) => option.value.toLowerCase() === raw.toLowerCase())
+  return found ? found.value : raw
+}
+
+/* Keeps the Request order, then appends any legacy/custom stored values. */
+export const buildProcessTypeOptions = (values = []) => {
+  const extras = [...new Set((values || []).map(processTypeLabel).filter(Boolean))]
+    .filter((value) => !PROCESS_TYPES.some((option) => option.value === value))
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+  return [
+    ...PROCESS_TYPES,
+    ...extras.map((value) => ({ value, label: value })),
+  ]
+}
+
 /* Register/Edit status options (canonical values used by the flow) */
 export const FIXTURE_STATUS_OPTIONS = [
   { value: 'In Stock', label: 'In Stock (Instock)' },

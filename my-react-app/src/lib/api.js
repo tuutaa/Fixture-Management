@@ -66,12 +66,53 @@ export const api = {
   fixtureOptions: (signal) => request('/fixturelist/options', { signal }),
   fixtureList: ({ line, model, signal } = {}) =>
     request(withQuery('/fixturelist', { line, model }), { signal }),
-  importFixtureList: (items) =>
-    request('/fixturelist/import', { method: 'POST', body: { items } }),
+  importFixtureList: (items, confirm = false) =>
+    request('/fixturelist/import', { method: 'POST', body: { items, confirm } }),
 
   /* Flat fixtures (fixtureDetail + line/model/step/process/position) */
-  fixtures: ({ line, model, status, q, signal } = {}) =>
-    request(withQuery('/fixtures', { line, model, status, q }), { signal }),
+  fixtures: (
+    { line, model, status, sn, type, step, process, position, storage, fixtureBase, revision, q, signal } = {},
+  ) =>
+    request(
+      withQuery('/fixtures', {
+        line,
+        model,
+        status,
+        sn,
+        type,
+        step,
+        process,
+        position,
+        storage,
+        fixtureBase,
+        revision,
+        q,
+      }),
+      { signal },
+    ),
+  fixtureFieldOptions: (signal) => request('/fixtures/options', { signal }),
+  /* Edit page — source of truth is fixtureDetail, with fixtureList as legacy fallback. */
+  editFixtures: (
+    { line, model, status, sn, type, step, process, position, storage, fixtureBase, revision, q, signal } = {},
+  ) =>
+    request(
+      withQuery('/fixtures/detail', {
+        line,
+        model,
+        status,
+        sn,
+        type,
+        step,
+        process,
+        position,
+        storage,
+        fixtureBase,
+        revision,
+        q,
+      }),
+      { signal },
+    ),
+  editFixtureOptions: (signal) => request('/fixtures/detail/options', { signal }),
   fixtureStats: (signal) => request('/fixture-stats', { signal }),
   fixtureDetails: (signal) => request('/fixture-details', { signal }),
   fixture: (sn) => request(`/fixtures/${encodeURIComponent(sn)}`),
@@ -120,6 +161,11 @@ export const api = {
       method: 'POST',
       body: { user },
     }),
+  resetScan: (requestId, user) =>
+    request(`/requests/${encodeURIComponent(requestId)}/reset-scan`, {
+      method: 'POST',
+      body: { user },
+    }),
   breakdownRequest: (requestId, action, sn, user) =>
     request(`/requests/${encodeURIComponent(requestId)}/breakdown`, {
       method: 'PUT',
@@ -130,7 +176,8 @@ export const api = {
   deleteRequest: (requestId) =>
     request(`/requests/${encodeURIComponent(requestId)}`, { method: 'DELETE' }),
 
-  /* Return (ME/TE Return Fixture -> Fixture confirm returned) */
+  /* Manual Issue / Return (backup flow, no Order/Request) */
+  issueFixture: (payload) => request('/issue', { method: 'POST', body: payload }),
   returnList: (signal) => request('/return', { signal }),
   returnFixture: (payload) => request('/return', { method: 'POST', body: payload }),
 

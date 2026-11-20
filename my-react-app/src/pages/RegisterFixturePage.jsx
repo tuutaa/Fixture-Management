@@ -13,10 +13,12 @@ import SearchableSelect from '../components/ui/SearchableSelect'
 import Button from '../components/ui/Button'
 import { useToast } from '../components/ui/Toast'
 import { useLabels, useServerMessage } from '../lib/i18n'
+import { cn } from '../lib/format'
+import { PROCESS_TYPES, processTypeLabel } from '../lib/constants'
 
 const STEP_OPTIONS = ['STEP1', 'STEP2', 'STEP ROTOR', 'STEP WINDING', 'TEST STEP']
 
-const TYPE_OPTIONS = ['mainline', 'winding', 'rotor', 'function']
+const TYPE_OPTIONS = PROCESS_TYPES.map((option) => option.value)
 
 const PROCESS_POSITION = [
   ['Rotor Assy', 'Stopport Impeller'],
@@ -87,6 +89,37 @@ const EMPTY_FORM = {
   exp: '',
 }
 
+const normSn = (value) => String(value || '').trim().toUpperCase()
+const normValue = (value) => String(value ?? '').trim().toUpperCase()
+
+function CellWithExisting({ value, existing, mono = false, right = false, truncate = false }) {
+  const hasExisting = existing !== undefined && existing !== null && existing !== ''
+  const differs = hasExisting && normValue(value) !== normValue(existing)
+  return (
+    <>
+      <span
+        className={cn(mono && 'font-mono', truncate && 'block max-w-[180px] truncate')}
+        title={String(value ?? '')}
+      >
+        {value || (value === 0 ? '0' : '-')}
+      </span>
+      {hasExisting ? (
+        <span
+          className={cn(
+            'mt-0.5 block text-[9px] font-black text-red-600',
+            mono && 'font-mono',
+            right && 'text-right',
+            truncate && 'block max-w-[180px] truncate',
+          )}
+          title={String(existing)}
+        >
+          {differs ? '≠ ' : ''}{existing}
+        </span>
+      ) : null}
+    </>
+  )
+}
+
 export default function RegisterFixturePage({ user }) {
   const { t, fixtureStatus } = useLabels()
   const sm = useServerMessage()
@@ -100,6 +133,8 @@ export default function RegisterFixturePage({ user }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const [focusTick, setFocusTick] = useState(0)
 
   const loadOptions = useCallback(async () => {
     setLoading(true)
@@ -127,6 +162,15 @@ export default function RegisterFixturePage({ user }) {
     loadOptions()
   }, [loadOptions])
 
+  useEffect(() => {
+    if (!focusTick) return undefined
+    const frame = window.requestAnimationFrame(() => {
+      snRef.current?.focus({ preventScroll: true })
+      snRef.current?.select()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [focusTick])
+
   const setField = (key, value) => setForm((current) => ({ ...current, [key]: value }))
 
   // Fixture base is generated from the serial number: everything before the first "-".
@@ -142,36 +186,74 @@ export default function RegisterFixturePage({ user }) {
     [form.process],
   )
 
-  const addToQueue = (event) => {
+  const addToQueue = async (event) => {
     event.preventDefault()
-    const sn = form.sn.trim()
+    const sn = normSn(form.sn)
+    // Clear on every Enter so the next SN can be scanned immediately,
+    // even when validation or the duplicate check fails.
+    setForm((current) => ({ ...current, sn: '' }))
+    setFocusTick((current) => current + 1)
+    if (checking) return
     const line = form.line.trim()
     const model = form.model.trim()
     if (!sn || !line || !model) {
       toast.error(t('กรุณากรอก SN, Line และ Model', 'Please enter SN, line and model'))
       return
     }
-    if (queue.some((item) => item.sn === sn)) {
+    if (queue.some((item) => normSn(item.sn) === sn)) {
       toast.error(t(`SN ${sn} อยู่ในรายการแล้ว`, `SN ${sn} is already in the list`))
       return
     }
+
+    setChecking(true)
+    let existing = null
+    try {
+      const data = await api.fixture(sn)
+      existing = data.fixture || null
+    } catch (err) {
+      if (err?.status !== 404) {
+        toast.error(
+          err?.message ? sm(err.message) : t('ตรวจสอบ SN ไม่สำเร็จ', 'Could not check the serial number'),
+        )
+        setChecking(false)
+        return
+      }
+    } finally {
+      setChecking(false)
+    }
+
     setQueue((current) => [
       ...current,
-      { id: `${sn}-${Date.now()}`, ...form, sn, line, model, fixtureBase },
+      { id: `${sn}-${Date.now()}`, ...form, sn, line, model, fixtureBase, existing },
     ])
-    // Keep the shared fields so the next SN can be added quickly.
-    setForm((current) => ({ ...current, sn: '' }))
-    snRef.current?.focus()
-    toast.success(t(`เพิ่ม ${sn} ลงรายการแล้ว`, `Added ${sn} to the list`))
+    if (existing) {
+      toast.error(
+        t(`SN ${sn} มีอยู่ในระบบแล้ว — ดูแถวสีแดงในรายการ`, `SN ${sn} already exists — see the red row in the list`),
+      )
+    } else {
+      toast.success(t(`เพิ่ม ${sn} ลงรายการแล้ว`, `Added ${sn} to the list`))
+    }
   }
 
   const removeFromQueue = (id) => {
     setQueue((current) => current.filter((item) => item.id !== id))
   }
 
+  const duplicateCount = queue.filter((item) => item.existing).length
+
   const registerAll = async () => {
     if (!queue.length) {
       toast.error(t('ยังไม่มีรายการที่จะลงทะเบียน', 'No items to register'))
+      return
+    }
+    const duplicates = queue.filter((item) => item.existing)
+    if (duplicates.length) {
+      toast.error(
+        t(
+          `มี ${duplicates.length} รายการที่อยู่ในระบบแล้ว กรุณาลบออกก่อน`,
+          `${duplicates.length} item(s) already exist in the system — remove them first`,
+        ),
+      )
       return
     }
     setBusy(true)
@@ -179,7 +261,7 @@ export default function RegisterFixturePage({ user }) {
     const failed = []
     for (const item of queue) {
       try {
-        const { id: _id, ...payload } = item
+        const { id: _id, existing: _existing, ...payload } = item
         await api.createFixture({ ...payload, user })
         succeeded.push(item.id)
       } catch (err) {
@@ -209,7 +291,7 @@ export default function RegisterFixturePage({ user }) {
 
       {error ? <ErrorState message={error} onRetry={loadOptions} /> : null}
 
-      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_480px] 2xl:grid-cols-[minmax(0,1fr)_680px]">
+      <div className="grid gap-4 xl:grid-cols-[minmax(320px,1fr)_minmax(0,2fr)] 2xl:grid-cols-[minmax(360px,1fr)_minmax(0,2.4fr)]">
         <Card className="p-5 sm:p-7">
           <SectionHeader title={t('กรอกข้อมูล Fixture', 'Enter fixture information')} className="mb-5" />
           <form onSubmit={addToQueue} className="space-y-5" noValidate>
@@ -235,9 +317,9 @@ export default function RegisterFixturePage({ user }) {
               <FormField label={t('Position', 'Position')}>
                 <SearchableSelect value={form.position} onChange={(value) => setField('position', value)} options={positionOptions.map((x) => ({ value: x, label: x }))} placeholder={t('เลือก Position', 'Select position')} clearable />
               </FormField>
-              <FormField label={t('Type', 'Type')}>
+              <FormField label={t('Process Type', 'Process Type')}>
                 <NativeSelect value={form.type} onChange={(event) => setField('type', event.target.value)}>
-                  <option value="">{t('เลือก Type', 'Select type')}</option>
+                  <option value="">{t('เลือก Process Type', 'Select process type')}</option>
                   {TYPE_OPTIONS.map((option) => (
                     <option key={option} value={option}>{option}</option>
                   ))}
@@ -272,7 +354,9 @@ export default function RegisterFixturePage({ user }) {
               <FormField
                 label={t('Serial Number (SN) *', 'Serial Number (SN) *')}
                 className="sm:col-span-2"
-                hint={t('สแกนหรือพิมพ์ SN แล้วกด Enter เพื่อเพิ่มลงรายการ', 'Scan or type the SN then press Enter to add it to the list')}
+                hint={checking
+                  ? t('กำลังตรวจสอบ SN ในระบบ…', 'Checking the serial number in the system…')
+                  : t('สแกนหรือพิมพ์ SN แล้วกด Enter เพื่อเพิ่มลงรายการ (ระบบจะเช็คข้อมูลซ้ำให้)', 'Scan or type the SN then press Enter to add it — duplicates are checked automatically')}
               >
                 <div className="flex items-center gap-3 rounded-2xl border-2 border-blue-500 bg-blue-50/50 px-4 shadow-sm shadow-blue-100 transition-shadow focus-within:ring-4 focus-within:ring-blue-500/15">
                   <ScanLine className="h-5 w-5 shrink-0 text-blue-600" />
@@ -288,6 +372,7 @@ export default function RegisterFixturePage({ user }) {
                       }
                     }}
                     placeholder={t('เช่น TB53AO0007-01', 'e.g. TB53AO0007-01')}
+                    aria-busy={checking}
                     autoComplete="off"
                     spellCheck={false}
                   />
@@ -311,7 +396,7 @@ export default function RegisterFixturePage({ user }) {
                 variant="secondary"
                 onClick={() => {
                   setForm(EMPTY_FORM)
-                  snRef.current?.focus()
+                  setFocusTick((current) => current + 1)
                 }}
                 disabled={busy}
               >
@@ -321,26 +406,28 @@ export default function RegisterFixturePage({ user }) {
           </form>
         </Card>
 
-        <Card className="p-5 xl:sticky xl:top-4">
+        <div className="min-w-0 xl:relative xl:h-full">
+        <Card className="p-5 xl:absolute xl:inset-0 xl:flex xl:flex-col xl:overflow-hidden">
           <SectionHeader
             icon={ClipboardList}
             title={t('รายการที่กรอก', 'Entered items')}
             description={queue.length
               ? t(`${queue.length} รายการรอลงทะเบียน`, `${queue.length} item(s) awaiting registration`)
               : t('ยังไม่มีรายการ', 'No items yet')}
-            className="mb-4"
+            className="mb-4 xl:shrink-0"
           />
 
+          <div className="xl:flex xl:min-h-0 xl:flex-1 xl:flex-col">
           {queue.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-slate-200 px-4 py-10 text-center">
+            <div className="rounded-xl border border-dashed border-slate-200 px-4 py-10 text-center xl:flex xl:flex-1 xl:flex-col xl:items-center xl:justify-center">
               <p className="text-xs font-semibold text-slate-500">{t('ยังไม่มีรายการ', 'No items yet')}</p>
               <p className="mt-1 text-[11px] text-slate-400">{t('กรอก SN แล้วกด Enter เพื่อเพิ่มลงรายการ', 'Enter an SN and press Enter to add it to the list')}</p>
             </div>
           ) : (
             <>
-              <p className="mb-1.5 text-[10px] text-slate-400">{t('เลื่อนแนวนอนเพื่อดูข้อมูลทั้งหมด', 'Scroll horizontally to see all data')}</p>
-              <div className="max-h-[520px] overflow-auto rounded-xl border border-slate-200">
-                <table className="w-full min-w-[1120px] border-collapse text-left text-[11px]">
+              <p className="mb-1.5 shrink-0 text-[10px] text-slate-400">{t('เลื่อนแนวนอนเพื่อดูข้อมูลทั้งหมด', 'Scroll horizontally to see all data')}</p>
+              <div className="max-h-[520px] overflow-auto rounded-xl border border-slate-200 xl:min-h-0 xl:max-h-none xl:flex-1">
+                <table className="w-full min-w-[1280px] border-collapse text-left text-[11px]">
                   <thead className="sticky top-0 z-20 bg-slate-50">
                     <tr className="text-[9px] font-black uppercase tracking-[0.1em] text-slate-400">
                       <th className="sticky left-0 z-30 border-b border-slate-200 bg-slate-50 px-3 py-2">{t('SN', 'SN')}</th>
@@ -350,7 +437,7 @@ export default function RegisterFixturePage({ user }) {
                       <th className="border-b border-slate-200 px-3 py-2">{t('Step', 'Step')}</th>
                       <th className="border-b border-slate-200 px-3 py-2">{t('Process', 'Process')}</th>
                       <th className="border-b border-slate-200 px-3 py-2">{t('Position', 'Position')}</th>
-                      <th className="border-b border-slate-200 px-3 py-2">{t('Type', 'Type')}</th>
+                      <th className="border-b border-slate-200 px-3 py-2">{t('Process Type', 'Process Type')}</th>
                       <th className="border-b border-slate-200 px-3 py-2">{t('ตำแหน่งเก็บ', 'Storage')}</th>
                       <th className="border-b border-slate-200 px-3 py-2">{t('Rev.', 'Rev.')}</th>
                       <th className="border-b border-slate-200 px-3 py-2">{t('สถานะ', 'Status')}</th>
@@ -363,35 +450,92 @@ export default function RegisterFixturePage({ user }) {
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {queue.map((item) => (
-                      <tr key={item.id} className="bg-white hover:bg-slate-50/70">
-                        <td className="sticky left-0 z-10 whitespace-nowrap bg-white px-3 py-2 font-mono text-[11px] font-bold text-slate-800">
+                      <tr
+                        key={item.id}
+                        className={cn(
+                          item.existing
+                            ? 'bg-red-50/80 text-red-700 hover:bg-red-100/70'
+                            : 'bg-white hover:bg-slate-50/70',
+                        )}
+                      >
+                        <td
+                          className={
+                            item.existing
+                              ? 'sticky left-0 z-10 whitespace-nowrap bg-red-50 px-3 py-2 font-mono text-[11px] font-bold text-red-700'
+                              : 'sticky left-0 z-10 whitespace-nowrap bg-white px-3 py-2 font-mono text-[11px] font-bold text-slate-800'
+                          }
+                        >
                           {item.sn}
+                          {item.existing ? (
+                            <span className="mt-0.5 block text-[9px] font-black uppercase tracking-wide">
+                              ⚠ {t('มีในระบบแล้ว', 'Already exists')}
+                            </span>
+                          ) : null}
                         </td>
-                        <td className="whitespace-nowrap px-3 py-2 font-mono text-slate-600">{item.fixtureBase || '-'}</td>
-                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">{item.line || '-'}</td>
-                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">{item.model || '-'}</td>
-                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">{item.step || '-'}</td>
-                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">{item.process || '-'}</td>
-                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">{item.position || '-'}</td>
-                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">{item.type || '-'}</td>
-                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">{item.storage || '-'}</td>
-                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">{item.revision || '-'}</td>
-                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">{item.status ? fixtureStatus(item.status) : '-'}</td>
-                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">{item.exp || '-'}</td>
-                        <td className="whitespace-nowrap px-3 py-2 text-right text-slate-600">{item.current ?? 0}</td>
-                        <td className="whitespace-nowrap px-3 py-2 text-right text-slate-600">{item.max ?? 0}</td>
+                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">
+                          <CellWithExisting
+                            value={item.fixtureBase}
+                            existing={item.existing
+                              ? (item.existing.fixtureBase || normSn(item.existing.sn).split('-')[0])
+                              : undefined}
+                            mono
+                          />
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">
+                          <CellWithExisting value={item.line} existing={item.existing?.line} />
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">
+                          <CellWithExisting value={item.model} existing={item.existing?.model} />
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">
+                          <CellWithExisting value={item.step} existing={item.existing?.step} />
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">
+                          <CellWithExisting value={item.process} existing={item.existing?.process} />
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">
+                          <CellWithExisting value={item.position} existing={item.existing?.position} />
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">
+                          <CellWithExisting
+                            value={processTypeLabel(item.type)}
+                            existing={processTypeLabel(item.existing?.type)}
+                          />
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">
+                          <CellWithExisting value={item.storage} existing={item.existing?.usage?.storage} />
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">
+                          <CellWithExisting value={item.revision} existing={item.existing?.revision} mono />
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">
+                          <CellWithExisting
+                            value={item.status ? fixtureStatus(item.status) : '-'}
+                            existing={item.existing?.status ? fixtureStatus(item.existing.status) : undefined}
+                          />
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">
+                          <CellWithExisting value={item.exp} existing={item.existing?.exp} />
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-right text-slate-600">
+                          <CellWithExisting value={item.current ?? 0} existing={item.existing?.usage?.current} right />
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-right text-slate-600">
+                          <CellWithExisting value={item.max ?? 0} existing={item.existing?.usage?.max} right />
+                        </td>
                         <td className="px-3 py-2 text-slate-600">
-                          <span className="block max-w-[180px] truncate" title={item.description || ''}>
-                            {item.description || '-'}
-                          </span>
+                          <CellWithExisting value={item.description} existing={item.existing?.description} truncate />
                         </td>
-                        <td className="sticky right-0 z-10 bg-white px-2 py-2 text-right">
+                        <td className={cn(
+                          'sticky right-0 z-10 px-2 py-2 text-right',
+                          item.existing ? 'bg-red-50' : 'bg-white',
+                        )}>
                           <button
                             type="button"
                             onClick={() => removeFromQueue(item.id)}
                             disabled={busy}
                             aria-label={t(`ลบ ${item.sn}`, `Delete ${item.sn}`)}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40"
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-red-600 transition-colors hover:bg-red-100 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-40"
                           >
                             <X className="h-4 w-4" />
                           </button>
@@ -403,9 +547,22 @@ export default function RegisterFixturePage({ user }) {
               </div>
             </>
           )}
+          </div>
 
-          <div className="mt-4 flex flex-col gap-2 border-t border-slate-100 pt-4">
-            <Button icon={ScanLine} onClick={registerAll} disabled={busy || queue.length === 0}>
+          <div className="mt-4 flex flex-col gap-2 border-t border-slate-100 pt-4 xl:shrink-0">
+            {duplicateCount > 0 ? (
+              <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[11px] font-bold leading-snug text-red-700">
+                ⚠ {t(
+                  `มี ${duplicateCount} รายการที่อยู่ในระบบแล้ว ลงทะเบียนไม่ได้จนกว่าจะลบแถวสีแดงออก`,
+                  `${duplicateCount} item(s) already exist in the system — remove the red rows before registering`,
+                )}
+              </p>
+            ) : null}
+            <Button
+              icon={ScanLine}
+              onClick={registerAll}
+              disabled={busy || queue.length === 0 || duplicateCount > 0}
+            >
               {busy
                 ? t('กำลังลงทะเบียน…', 'Registering…')
                 : t(`ลงทะเบียนทั้งหมด (${queue.length})`, `Register all (${queue.length})`)}
@@ -420,6 +577,7 @@ export default function RegisterFixturePage({ user }) {
             </Button>
           </div>
         </Card>
+        </div>
       </div>
     </div>
   )

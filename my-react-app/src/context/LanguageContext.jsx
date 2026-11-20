@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
 const LanguageContext = createContext()
 
@@ -17,7 +17,7 @@ export const LanguageProvider = ({ children }) => {
     }
   })
 
-  const setLang = (next) => {
+  const setLang = useCallback((next) => {
     const value = normalize(next)
     setLangState(value)
     try {
@@ -25,16 +25,18 @@ export const LanguageProvider = ({ children }) => {
     } catch {
       /* ignore */
     }
-  }
+  }, [])
 
   useEffect(() => {
     document.documentElement.lang = lang === 'TH' ? 'th' : 'en'
   }, [lang])
 
-  const t = (th, en) => (lang === 'TH' ? th : (en ?? th))
+  const t = useCallback((th, en) => (lang === 'TH' ? th : (en ?? th)), [lang])
+
+  const value = useMemo(() => ({ lang, setLang, t }), [lang, setLang, t])
 
   return (
-    <LanguageContext.Provider value={{ lang, setLang, t }}>
+    <LanguageContext.Provider value={value}>
       {children}
     </LanguageContext.Provider>
   )

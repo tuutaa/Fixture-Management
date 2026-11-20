@@ -36,6 +36,7 @@ import multer from 'multer'
 import path from 'node:path'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { FIXTURE_POSITION_MASTER, checkPositionMeta, normalizeMeta } from './src/lib/fixtureMeta.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -116,12 +117,33 @@ const userSchema = new mongoose.Schema(
 )
 const User = mongoose.model('User', userSchema, 'users')
 
-/* fixtureDetail { sn, status, type, usage, registered, fixtureBase, revision } */
+/* Fixture `type` = Process Type; canonical values mirror Request's PROCESS_TYPES. */
+const FIXTURE_TYPE_VALUES = ['Mainline', 'Rotor', 'Winding', 'Function']
+const canonicalProcessType = (value) => {
+  const raw = String(value ?? '').trim()
+  return FIXTURE_TYPE_VALUES.find((item) => item.toLowerCase() === raw.toLowerCase()) || raw
+}
+const FIXTURE_STATUS_VALUES = [
+  'In Stock',
+  'In Use',
+  'Maintenance',
+  'Scrape',
+  'PR',
+  'PR Ready',
+  'Replaced',
+]
+
+/* fixtureDetail { sn, line, model, status, type, step, process, position, usage, registered, fixtureBase, revision } */
 const fixtureDetailSchema = new mongoose.Schema(
   {
     sn: { type: String, required: true, unique: true, index: true },
+    line: { type: String, default: '' },
+    model: { type: String, default: '' },
     status: { type: String, default: 'In Stock', index: true },
     type: String,
+    step: { type: String, default: '' },
+    process: { type: String, default: '' },
+    position: { type: String, default: '' },
     usage: {
       current: { type: Number, default: 0 },
       max: { type: Number, default: 0 },
@@ -228,6 +250,14 @@ const History = mongoose.model('History', historySchema, 'history')
 /* ------------------------------------------------------------------ */
 
 const text = (value) => (typeof value === 'string' ? value.trim() : value)
+const escapeRegexValue = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const metaKey = (value) => normalizeMeta(value).toLowerCase()
+const metaSame = (a, b) => metaKey(a) === metaKey(b)
+const metaRowMatches = (a = {}, b = {}) =>
+  ['step', 'process', 'position'].every((key) => metaSame(a[key], b[key]))
+const baseKey = (value) => text(value).replace(/\s+/g, '').toUpperCase()
+
+const ACTIVE_REQUEST_STATUSES = ['Waiting', 'Progress', 'Hold', 'Verify']
 
 const asyncRoute = (handler) => (req, res, next) =>
   Promise.resolve(handler(req, res, next)).catch(next)
@@ -271,13 +301,17 @@ const findFixture = async (sn) => {
     if (detail) resolvedSn = detail.sn
   }
   if (!detail) return null
+  const escapedLookup = String(sn).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const doc = await FixtureList.findOne({ 'fixtureInfo.sn': sn }).lean()
-    || await FixtureList.findOne({ 'fixtureInfo.sn': { $regex: `^${String(sn).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$` } }).lean()
+    || await FixtureList.findOne({ 'fixtureInfo.sn': resolvedSn }).lean()
+    || await FixtureList.findOne({ 'fixtureInfo.sn': { $regex: `^${escapedLookup}$` } }).lean()
   let step = ''
   let process = ''
   let position = ''
   if (doc) {
-    const info = (doc.fixtureInfo || []).find((item) => (item.sn || []).includes(sn) || (item.sn || []).some((s) => String(s).trim() === String(sn).trim()))
+    const info = (doc.fixtureInfo || []).find((item) =>
+      (item.sn || []).some((s) => [sn, resolvedSn].some((value) => String(s).trim() === String(value).trim())),
+    )
     if (info) {
       step = info.step || ''
       process = info.process || ''
@@ -287,11 +321,12 @@ const findFixture = async (sn) => {
   return {
     ...detail,
     sn: resolvedSn,
-    line: doc?.line || '',
-    model: doc?.model || '',
-    step,
-    process,
-    position,
+    // fixtureDetail is authoritative; fixtureList is only a legacy fallback.
+    line: detail.line || doc?.line || '',
+    model: detail.model || doc?.model || '',
+    step: detail.step || step,
+    process: detail.process || process,
+    position: detail.position || position,
   }
 }
 
@@ -324,7 +359,29 @@ const updateFixtureInfoBySn = async (sn, set) => {
   return result.matchedCount > 0
 }
 
-const flattenFixtures = async ({ line, model, status } = {}) => {
+const matchesText = (value, needle) =>
+  !needle || String(value ?? '').toLowerCase().includes(String(needle).toLowerCase())
+
+const matchesFixtureFilters = (
+  row,
+  { line, model, status, sn, type, step, process, position, storage, fixtureBase, revision } = {},
+) => {
+  if (line && !matchesText(row.line, line)) return false
+  if (model && !matchesText(row.model, model)) return false
+  if (status && !String(status).split(',').includes(row.status)) return false
+  if (!matchesText(row.sn, sn)) return false
+  if (!matchesText(row.type, type)) return false
+  if (!matchesText(row.step, step)) return false
+  if (!matchesText(row.process, process)) return false
+  if (!matchesText(row.position, position)) return false
+  if (!matchesText(row.usage?.storage || row.storage, storage)) return false
+  if (!matchesText(row.fixtureBase, fixtureBase)) return false
+  if (!matchesText(row.revision, revision)) return false
+  return true
+}
+
+const flattenFixtures = async (filters = {}) => {
+  const { line, model } = filters
   const match = {}
   if (line) match.line = line
   if (model) match.model = model
@@ -343,11 +400,32 @@ const flattenFixtures = async ({ line, model, status } = {}) => {
       for (const s of info.sn || []) {
         const detail = detailMap.get(s)
         if (!detail) continue
-        if (status && !String(status).split(',').includes(detail.status)) continue
-        result.push({
+        const row = {
           ...detail,
-          line: doc.line,
-          model: doc.model,
+          line: detail.line || doc.line || '',
+          model: detail.model || doc.model || '',
+          step: detail.step || info.step || '',
+          process: detail.process || info.process || '',
+          position: detail.position || info.position || '',
+        }
+        if (matchesFixtureFilters(row, filters)) result.push(row)
+      }
+    }
+  }
+  return result
+}
+
+/* Edit page source of truth: fixtureDetail first, fixtureList only as legacy fallback. */
+const flattenFixtureDetails = async (filters = {}) => {
+  const details = await FixtureDetail.find({}).lean()
+  const lists = await FixtureList.find({}, 'line model fixtureInfo').lean()
+  const listed = new Map()
+  for (const doc of lists) {
+    for (const info of doc.fixtureInfo || []) {
+      for (const s of info.sn || []) {
+        listed.set(s, {
+          line: doc.line || '',
+          model: doc.model || '',
           step: info.step || '',
           process: info.process || '',
           position: info.position || '',
@@ -355,7 +433,19 @@ const flattenFixtures = async ({ line, model, status } = {}) => {
       }
     }
   }
-  return result
+  return details
+    .map((detail) => {
+      const fallback = listed.get(detail.sn) || {}
+      return {
+        ...detail,
+        line: detail.line || fallback.line || '',
+        model: detail.model || fallback.model || '',
+        step: detail.step || fallback.step || '',
+        process: detail.process || fallback.process || '',
+        position: detail.position || fallback.position || '',
+      }
+    })
+    .filter((row) => matchesFixtureFilters(row, filters))
 }
 
 
@@ -566,7 +656,10 @@ app.get(
   }),
 )
 
-/* Batch import / update fixturelist from Excel rows */
+/* Batch import / update fixturelist from Excel rows.
+ * Before writing, validate step/process/position of every registered fixture
+ * whose base appears in the file. If any fixture is missing or mismatched,
+ * return a preview and wait for the client's confirmation. */
 app.post(
   '/api/fixturelist/import',
   asyncRoute(async (req, res) => {
@@ -574,46 +667,161 @@ app.post(
     if (!list.length) {
       return res.status(400).json({ success: false, message: 'ไม่มีข้อมูลสำหรับ Import' })
     }
+    const confirm = req.body?.confirm === true
+
+    const normalizedList = list
+      .map((item) => {
+        const line = text(item.line)
+        const model = text(item.model)
+        const fixtureInfo = (Array.isArray(item.fixtureInfo) ? item.fixtureInfo : [])
+          .map((info) => {
+            const imported = {
+              step: normalizeMeta(info?.step),
+              process: normalizeMeta(info?.process),
+              position: normalizeMeta(info?.position),
+            }
+            const check = checkPositionMeta(imported)
+            const canonical = check.canonical
+            const matchesMaster = check.matches && !check.unknown
+            const desired = canonical || imported
+            const count = Number(info?.count)
+            return {
+              ...imported,
+              canonical,
+              matchesMaster,
+              desired,
+              count: Number.isFinite(count) && count > 0 ? count : 0,
+              sn: (Array.isArray(info?.sn) ? info.sn : [])
+                .map((sn) => text(sn))
+                .filter(Boolean),
+            }
+          })
+          .filter((info) => info.position)
+        return { line, model, fixtureInfo }
+      })
+      .filter((item) => item.line && item.model)
+
+    if (!normalizedList.length) {
+      return res.status(400).json({ success: false, message: 'ไม่มีข้อมูลสำหรับ Import' })
+    }
+
+    /* base SN -> imported rows that reference it */
+    const baseRefs = new Map()
+    for (const item of normalizedList) {
+      for (const info of item.fixtureInfo) {
+        for (const rawBase of info.sn) {
+          const base = baseKey(rawBase)
+          if (!base) continue
+          if (!baseRefs.has(base)) baseRefs.set(base, [])
+          baseRefs.get(base).push({ line: item.line, model: item.model, info })
+        }
+      }
+    }
+
+    let registered = []
+    if (baseRefs.size) {
+      const basePattern = new RegExp(
+        `^(${[...baseRefs.keys()].map(escapeRegexValue).join('|')})$`,
+        'i',
+      )
+      registered = await FixtureDetail.find({ fixtureBase: basePattern }).lean()
+    }
+
+    const issues = []
+    const seenIssues = new Set()
+    for (const detail of registered) {
+      const base = baseKey(detail.fixtureBase)
+      const refs = baseRefs.get(base) || []
+      if (!refs.length) continue
+      const current = {
+        step: text(detail.step) || '',
+        process: text(detail.process) || '',
+        position: text(detail.position) || '',
+      }
+      for (const ref of refs) {
+        const issueKey = `${base}|${detail.sn}`
+        if (seenIssues.has(issueKey)) continue
+        const hasCurrent = ['step', 'process', 'position'].every((key) => metaKey(current[key]))
+        const desired = ref.info.desired
+        const matches = metaRowMatches(current, desired)
+        if (hasCurrent && matches && ref.info.matchesMaster) continue
+        seenIssues.add(issueKey)
+        const reason = !ref.info.matchesMaster
+          ? 'master'
+          : !hasCurrent
+            ? 'missing'
+            : 'mismatch'
+        issues.push({
+          base: text(detail.fixtureBase),
+          sn: detail.sn,
+          line: ref.line,
+          model: ref.model,
+          current,
+          desired,
+          imported: {
+            step: ref.info.step,
+            process: ref.info.process,
+            position: ref.info.position,
+          },
+          reason,
+        })
+      }
+    }
+
+    if (issues.length && !confirm) {
+      return res.status(409).json({
+        success: false,
+        needsConfirm: true,
+        message: `พบ Fixture ที่ต้องอัปเดต step/process/position ${issues.length} รายการ — กดยืนยันเพื่ออัปเดตและนำเข้าไฟล์`,
+        issues,
+      })
+    }
+
+    let detailsUpdated = 0
+    for (const issue of issues) {
+      await FixtureDetail.updateOne(
+        { sn: issue.sn },
+        {
+          $set: {
+            line: issue.line,
+            model: issue.model,
+            step: issue.desired.step,
+            process: issue.desired.process,
+            position: issue.desired.position,
+          },
+        },
+      )
+      detailsUpdated++
+    }
 
     let inserted = 0
     let updated = 0
-
-    for (const item of list) {
-      const line = text(item.line)
-      const model = text(item.model)
-      if (!line || !model) continue
-
-      const fixtureInfo = (Array.isArray(item.fixtureInfo) ? item.fixtureInfo : [])
-        .map((info) => {
-          const count = Number(info?.count)
-          return {
-            step: text(info?.step) || '',
-            process: text(info?.process) || '',
-            position: text(info?.position) || '',
-            count: Number.isFinite(count) && count > 0 ? count : 0,
-            sn: (Array.isArray(info?.sn) ? info.sn : [])
-              .map((sn) => text(sn))
-              .filter(Boolean),
-          }
-        })
-        .filter((info) => info.position)
-      const existing = await FixtureList.findOne({ line, model })
+    for (const item of normalizedList) {
+      const fixtureInfo = item.fixtureInfo.map((info) => ({
+        step: info.desired.step,
+        process: info.desired.process,
+        position: info.desired.position,
+        count: info.count,
+        sn: info.sn,
+      }))
+      const existing = await FixtureList.findOne({ line: item.line, model: item.model })
 
       if (existing) {
         existing.fixtureInfo = fixtureInfo
         await existing.save()
         updated++
       } else {
-        await FixtureList.create({ line, model, fixtureInfo })
+        await FixtureList.create({ line: item.line, model: item.model, fixtureInfo })
         inserted++
       }
     }
 
     res.json({
       success: true,
-      message: `นำเข้าข้อมูลเรียบร้อย: เพิ่มใหม่ ${inserted} รายการ, อัปเดต ${updated} รายการ`,
+      message: `นำเข้าข้อมูลเรียบร้อย: เพิ่มใหม่ ${inserted} รายการ, อัปเดต ${updated} รายการ, อัปเดต Fixture ${detailsUpdated} ตัว`,
       inserted,
       updated,
+      detailsUpdated,
     })
   }),
 )
@@ -720,8 +928,132 @@ app.get(
 app.get(
   '/api/fixtures',
   asyncRoute(async (req, res) => {
-    const { line, model, status, q } = req.query
-    let data = await flattenFixtures({ line, model, status })
+    const { line, model, status, sn, type, step, process, position, storage, fixtureBase, revision, q } = req.query
+    let data = await flattenFixtures({
+      line,
+      model,
+      status,
+      sn,
+      type,
+      step,
+      process,
+      position,
+      storage,
+      fixtureBase,
+      revision,
+    })
+    if (q) {
+      const needle = String(q).toLowerCase()
+      data = data.filter((item) =>
+        [item.sn, item.type, item.fixtureBase, item.usage?.storage, item.storage, item.model, item.line, item.process, item.position, item.revision, item.description]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(needle)),
+      )
+    }
+    res.json(data)
+  }),
+)
+
+/* Distinct values for the Edit page filter zone + field dropdowns. */
+app.get(
+  '/api/fixtures/options',
+  asyncRoute(async (_req, res) => {
+    const fixtures = await flattenFixtures({})
+    const sortValues = (values) =>
+      [...new Set(values.filter((value) => value !== '' && value !== null && value !== undefined))].sort(
+        (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' }),
+      )
+    const pick = (getter) => sortValues(fixtures.map(getter))
+    const storageDocs = await Storage.find({}, 'location').lean()
+
+    res.json({
+      lines: pick((row) => row.line),
+      models: pick((row) => row.model),
+      statuses: pick((row) => row.status),
+      types: sortValues(fixtures.map((row) => canonicalProcessType(row.type))),
+      steps: pick((row) => row.step),
+      processes: pick((row) => row.process),
+      positions: pick((row) => row.position),
+      fixtureBases: pick((row) => row.fixtureBase),
+      revisions: pick((row) => row.revision),
+      storages: sortValues([
+        ...storageDocs.map((doc) => doc.location),
+        ...fixtures.map((row) => row.usage?.storage || row.storage),
+      ]),
+    })
+  }),
+)
+
+/* Edit page — options + rows sourced from fixtureDetail (fixtureList is fallback only). */
+app.get(
+  '/api/fixtures/detail/options',
+  asyncRoute(async (_req, res) => {
+    const rows = await flattenFixtureDetails({})
+    const sortValues = (values) =>
+      [...new Set(values.filter((value) => value !== '' && value !== null && value !== undefined))].sort(
+        (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' }),
+      )
+
+    let fanLocations = []
+    let fanModels = []
+    try {
+      const db = await getFan2Db()
+      const locationDocs = await db.collection('Location').find({}, { projection: { location: 1 } }).toArray()
+      const modelDocs = await db.collection('ModelNEW').find({}, { projection: { model: 1 } }).toArray()
+      fanLocations = locationDocs.map((doc) => text(doc.location)).filter(Boolean)
+      fanModels = modelDocs.map((doc) => text(doc.model)).filter(Boolean)
+    } catch {
+      // FAN2 may be unavailable — fixtureDetail values still populate every filter.
+    }
+
+    const storageDocs = await Storage.find({}, 'location').lean()
+    const positionByProcess = {}
+    const addPosition = (process, position) => {
+      if (!process || !position) return
+      if (!positionByProcess[process]) positionByProcess[process] = []
+      if (!positionByProcess[process].includes(position)) positionByProcess[process].push(position)
+    }
+    for (const item of FIXTURE_POSITION_MASTER) addPosition(item.process, item.position)
+    for (const row of rows) addPosition(row.process, row.position)
+    for (const key of Object.keys(positionByProcess)) positionByProcess[key] = sortValues(positionByProcess[key])
+
+    res.json({
+      sns: sortValues(rows.map((row) => row.sn)),
+      lines: sortValues([...fanLocations, ...rows.map((row) => row.line)]),
+      models: sortValues([...fanModels, ...rows.map((row) => row.model)]),
+      statuses: sortValues([...FIXTURE_STATUS_VALUES, ...rows.map((row) => row.status)]),
+      types: sortValues([...FIXTURE_TYPE_VALUES, ...rows.map((row) => canonicalProcessType(row.type))]),
+      steps: sortValues([...FIXTURE_POSITION_MASTER.map((item) => item.step), ...rows.map((row) => row.step)]),
+      processes: sortValues([...FIXTURE_POSITION_MASTER.map((item) => item.process), ...rows.map((row) => row.process)]),
+      positions: sortValues([...FIXTURE_POSITION_MASTER.map((item) => item.position), ...rows.map((row) => row.position)]),
+      fixtureBases: sortValues(rows.map((row) => row.fixtureBase)),
+      revisions: sortValues(rows.map((row) => row.revision)),
+      storages: sortValues([
+        ...storageDocs.map((doc) => doc.location),
+        ...rows.map((row) => row.usage?.storage || row.storage),
+      ]),
+      positionByProcess,
+    })
+  }),
+)
+
+app.get(
+  '/api/fixtures/detail',
+  asyncRoute(async (req, res) => {
+    const { line, model, status, sn, type, step, process, position, storage, fixtureBase, revision, q } = req.query
+    let data = await flattenFixtureDetails({
+      line,
+      model,
+      status,
+      sn,
+      type,
+      step,
+      process,
+      position,
+      storage,
+      fixtureBase,
+      revision,
+    })
     if (q) {
       const needle = String(q).toLowerCase()
       data = data.filter((item) =>
@@ -768,11 +1100,20 @@ app.post(
       })
     }
 
+    const step = normalizeMeta(body.step)
+    const process = normalizeMeta(body.process)
+    const position = normalizeMeta(body.position)
+
     // Not Exist -> create fixtureDetail + add sn to fixtureList
     await FixtureDetail.create({
       sn,
+      line: text(body.line),
+      model: text(body.model),
       status: text(body.status) || 'In Stock',
-      type: text(body.type) || '',
+      type: canonicalProcessType(body.type),
+      step,
+      process,
+      position,
       usage: {
         current: Number(body.current) || 0,
         max: Number(body.max) || 0,
@@ -784,10 +1125,6 @@ app.post(
       revision: text(body.revision) || '',
       pmDate: text(body.pmDate) || '',
     })
-
-    const step = text(body.step) || ''
-    const process = text(body.process) || ''
-    const position = text(body.position) || ''
 
     const doc = await FixtureList.findOne({ line, model })
     if (doc) {
@@ -824,9 +1161,13 @@ app.put(
     }
 
     const set = {}
-    for (const key of ['status', 'type', 'fixtureBase', 'revision', 'pmDate']) {
+    for (const key of ['line', 'model', 'status', 'type', 'fixtureBase', 'revision', 'pmDate']) {
       if (body[key] !== undefined) set[key] = body[key]
     }
+    for (const key of ['step', 'process', 'position']) {
+      if (body[key] !== undefined) set[key] = normalizeMeta(body[key])
+    }
+    if (set.type !== undefined) set.type = canonicalProcessType(set.type)
     if (body.storage !== undefined && body.usage?.storage === undefined) {
       set['usage.storage'] = body.storage
     }
@@ -975,6 +1316,20 @@ const scanPlanForRequest = async (request) => {
       ...cmp.return.map((item) => ({ ...item, action: 'return' })),
     ]
   }
+  if (/breakdown/i.test(String(request?.type || ''))) {
+    // A broken fixture reported in the request must come back to stock.
+    const broken = (Array.isArray(request?.breakdownItems) ? request.breakdownItems : [])
+      .map((item) => ({ sn: text(item?.sn), symptom: text(item?.symptom) }))
+      .filter((item) => item.sn)
+    const details = await Promise.all(broken.map((item) => findFixture(item.sn)))
+    return broken.map((item, index) => ({
+      sn: item.sn,
+      position: details[index]?.position || item.symptom || '',
+      process: details[index]?.process || '',
+      symptom: item.symptom,
+      action: 'return',
+    }))
+  }
   return []
 }
 
@@ -1029,6 +1384,47 @@ app.post(
       return res.status(400).json({ success: false, message: 'กรุณาระบุประเภทคำขอและ Line' })
     }
 
+    const breakdownItems = Array.isArray(body.breakdownItems)
+      ? body.breakdownItems.map((it) => ({ sn: text(it?.sn) || '', symptom: text(it?.symptom) || '' })).filter((it) => it.sn || it.symptom)
+      : []
+
+    /* Block duplicate requests. Rejected/Done are history and may be requested
+     * again; Waiting/Progress/Hold/Verify are still active in the system. */
+    const duplicateFilter = { status: { $in: ACTIVE_REQUEST_STATUSES } }
+    if (type === 'Breakdown') {
+      const sns = breakdownItems.map((it) => it.sn).filter(Boolean)
+      if (sns.length) {
+        const duplicate = await Request.findOne({
+          ...duplicateFilter,
+          'breakdownItems.sn': { $in: sns },
+        }).lean()
+        if (duplicate) {
+          const matchedSn = (duplicate.breakdownItems || [])
+            .find((it) => sns.includes(it.sn))?.sn || sns[0]
+          return res.status(409).json({
+            success: false,
+            message: `มีคำขอ ${duplicate.request_id} ที่ยังดำเนินการอยู่สำหรับ Fixture ${matchedSn}`,
+            duplicate,
+          })
+        }
+      }
+    } else if (type === 'Change Model' && currentModel && changeModel) {
+      const duplicate = await Request.findOne({
+        ...duplicateFilter,
+        type: 'Change Model',
+        line,
+        currentModel,
+        changeModel,
+      }).lean()
+      if (duplicate) {
+        return res.status(409).json({
+          success: false,
+          message: `มีคำขอ ${duplicate.request_id} ที่ยังดำเนินการอยู่สำหรับ Change Model ${line} · ${currentModel} → ${changeModel}`,
+          duplicate,
+        })
+      }
+    }
+
     const stamp = todayStamp()
     const todayCount = await Request.countDocuments({
       request_id: new RegExp(`^REQ${stamp}`),
@@ -1036,10 +1432,6 @@ app.post(
     const request_id = `REQ${stamp}${String(todayCount + 1).padStart(3, '0')}`
 
     const desc = text(body.desc) || (type === 'Change Model' && changeModel ? `${currentModel} → ${changeModel}` : '')
-
-    const breakdownItems = Array.isArray(body.breakdownItems)
-      ? body.breakdownItems.map((it) => ({ sn: text(it?.sn) || '', symptom: text(it?.symptom) || '' })).filter((it) => it.sn || it.symptom)
-      : []
 
     const request = await Request.create({
       request_id,
@@ -1196,6 +1588,26 @@ app.get(
       success: true,
       plan: await scanPlanForRequest(request),
       matches: request.scanMatches || [],
+    })
+  }),
+)
+
+/* Clear recorded scans so the issue / return lists go back to red and can be
+ * rescanned. Fixture statuses are untouched until ตกลง. */
+app.post(
+  '/api/requests/:requestId/reset-scan',
+  asyncRoute(async (req, res) => {
+    const request = await Request.findOne({ request_id: text(req.params.requestId) })
+    const blocked = scanRequestGuard(request, req.body?.user)
+    if (blocked) return res.status(blocked.status).json({ success: false, message: blocked.message })
+
+    request.scanMatches = []
+    await request.save()
+
+    return res.json({
+      success: true,
+      request,
+      message: 'รีเซ็ตรายการสแกนแล้ว',
     })
   }),
 )
@@ -1565,8 +1977,61 @@ app.delete(
 )
 
 /* ------------------------------------------------------------------ */
-/* Return (ME/TE Return Fixture -> Fixture confirm returned)           */
+/* Manual Issue / Return (backup flow, no Order/Request required)      */
 /* ------------------------------------------------------------------ */
+
+/* Issue from stock without an order */
+app.post(
+  '/api/issue',
+  asyncRoute(async (req, res) => {
+    const sn = text(req.body?.sn)
+    const line = text(req.body?.line)
+    const model = text(req.body?.model)
+    const note = text(req.body?.note)
+
+    if (!sn) return res.status(400).json({ success: false, message: 'กรุณาระบุ Serial Number' })
+
+    const fixture = await findFixture(sn)
+    if (!fixture) {
+      return res.status(404).json({ success: false, message: 'ไม่พบ Serial Number นี้ในระบบ' })
+    }
+    if (fixture.status !== 'In Stock') {
+      return res.status(409).json({
+        success: false,
+        message: `Fixture นี้ไม่ได้อยู่ใน Stock (${fixture.status})`,
+        fixture,
+      })
+    }
+
+    const location = line || text(fixture.line) || '-'
+    const usedModel = model || text(fixture.model) || '-'
+    await updateFixtureBySn(fixture.sn, {
+      status: 'In Use',
+      'usage.current': (Number(fixture.usage?.current) || 0) + 1,
+      'usage.usedLine': location,
+      'usage.currentModel': usedModel,
+      'usage.changeModel': '',
+    })
+
+    await recordHistory(
+      {
+        sn: fixture.sn,
+        request_id: text(req.body?.request_id) || '',
+        action: 'Issue',
+        detail: `จ่าย Fixture แบบไม่ผ่าน Order — ${location} · ${usedModel}${note ? ` · ${note}` : ''}`,
+        line: location,
+        model: usedModel,
+      },
+      req.body?.user,
+    )
+
+    return res.json({
+      success: true,
+      message: `จ่าย ${fixture.sn} ให้ ${location} · ${usedModel} สำเร็จ`,
+      fixture: { ...fixture, status: 'In Use' },
+    })
+  }),
+)
 
 app.get(
   '/api/return',
@@ -1596,18 +2061,20 @@ app.post(
       })
     }
 
-    await updateFixtureBySn(sn, {
+    await updateFixtureBySn(fixture.sn, {
       status: target,
+      'usage.current': 0,
+      'usage.usedLine': '',
       'usage.currentModel': '',
       'usage.changeModel': '',
     })
 
     await recordHistory(
       {
-        sn,
+        sn: fixture.sn,
         request_id: text(req.body?.request_id) || '',
         action: 'Return',
-        detail: `ME/TE Return Fixture — Fixture confirm returned → ${target}`,
+        detail: `คืน Fixture แบบไม่ผ่าน Order — Fixture confirm returned → ${target}`,
         line: fixture.line,
         model: fixture.model,
       },
@@ -1616,7 +2083,7 @@ app.post(
 
     return res.json({
       success: true,
-      message: `คืน ${sn} เข้า ${target} สำเร็จ`,
+      message: `คืน ${fixture.sn} เข้า ${target} สำเร็จ`,
       fixture: { ...fixture, status: target },
     })
   }),
@@ -1629,7 +2096,7 @@ app.post(
 app.get(
   '/api/pm',
   asyncRoute(async (_req, res) => {
-    const fixtures = await flattenFixtures({ status: 'In Use,Maintenance' })
+    const fixtures = await flattenFixtureDetails({ status: 'In Use,Maintenance' })
     const data = fixtures.map((fixture) => ({
       ...fixture,
       pmStates: pmStateOf(fixture),
@@ -1786,7 +2253,7 @@ app.post(
 app.get(
   '/api/maintenance',
   asyncRoute(async (_req, res) => {
-    const queue = await flattenFixtures({ status: 'Maintenance' })
+    const queue = await flattenFixtureDetails({ status: 'Maintenance' })
     res.json(queue)
   }),
 )
@@ -1813,6 +2280,7 @@ app.post(
       const newExp = text(body.newExp) || ''
       await updateFixtureBySn(sn, {
         status: 'In Use',
+        pmDate: '',
         'usage.exp': newExp,
         'usage.current': 0,
       })
@@ -1851,6 +2319,7 @@ app.post(
 
       await updateFixtureBySn(sn, {
         status: statusMap[outcome],
+        pmDate: '',
         orderStatus: 'Pending',
         orderNote: outcome,
       })

@@ -27,6 +27,7 @@ export default function DataTable({
   dense = false,
   className,
   footerNote,
+  embedded = false,
 }) {
   const { t } = useLanguage()
   const [sort, setSort] = useState(initialSort)
@@ -73,18 +74,27 @@ export default function DataTable({
   }, [totalPages, safePage])
 
   return (
-    <div className={cn('table-shell', className)}>
-      {toolbar ? <div className="border-b border-slate-100 bg-white p-3.5 sm:p-4">{toolbar}</div> : null}
+    <div
+      className={cn(
+        'table-shell',
+        embedded && 'flex h-full min-h-0 flex-col !rounded-none !border-0 !shadow-none',
+        className,
+      )}
+    >
+      {toolbar ? <div className="shrink-0 border-b border-slate-100 bg-white p-3.5 sm:p-4">{toolbar}</div> : null}
 
       {pageRows.length === 0 ? (
-        <EmptyState
-          icon={emptyIcon}
-          title={emptyTitle ?? t('ไม่พบข้อมูล', 'No data')}
-          description={emptyDescription}
-          action={emptyAction}
-        />
+        <div className={cn('min-h-0', embedded && 'flex-1')}>
+          <EmptyState
+            icon={emptyIcon}
+            title={emptyTitle ?? t('ไม่พบข้อมูล', 'No data')}
+            description={emptyDescription}
+            action={emptyAction}
+            className={embedded ? 'h-full justify-start !py-8' : undefined}
+          />
+        </div>
       ) : (
-        <div className="overflow-x-auto">
+        <div className={cn('overflow-x-auto', embedded && 'min-h-0 flex-1 overflow-y-auto')}>
           <table className="w-full min-w-[720px] border-collapse text-left">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50/60">
@@ -168,7 +178,7 @@ export default function DataTable({
         </div>
       )}
 
-      <div className="flex flex-col gap-3 border-t border-slate-100 bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex shrink-0 flex-col gap-3 border-t border-slate-100 bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-[11px] font-medium text-slate-400">
           {footerNote ? `${footerNote} · ` : ''}
           {sorted.length === 0

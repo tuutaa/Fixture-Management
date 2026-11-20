@@ -1,4 +1,5 @@
 import {
+  ArrowLeftRight,
   Boxes,
   FilePlus2,
   History,
@@ -6,7 +7,6 @@ import {
   PencilLine,
   ScanLine,
   ShoppingCart,
-  Undo2,
   Wrench,
 } from 'lucide-react'
 
@@ -47,11 +47,11 @@ export const NAV_GROUPS = [
       },
       {
         key: 'return',
-        labelTh: 'คืน Fixture',
-        labelEn: 'Return',
-        hintTh: 'ME/TE คืน → Fixture ยืนยัน',
-        hintEn: 'ME/TE Return → Fixture confirm',
-        icon: Undo2,
+        labelTh: 'เบิก / คืน Fixture',
+        labelEn: 'Issue / Return',
+        hintTh: 'จ่ายจาก Stock / รับคืนเข้าคลังหรือ PM (ไม่ผ่าน Order)',
+        hintEn: 'Issue from stock / return to stock or PM (no order)',
+        icon: ArrowLeftRight,
       },
     ],
   },
