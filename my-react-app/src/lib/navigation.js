@@ -1,5 +1,4 @@
 import {
-  ArrowLeftRight,
   Boxes,
   FilePlus2,
   History,
@@ -44,14 +43,6 @@ export const NAV_GROUPS = [
         hintTh: 'เปลี่ยนรุ่น / Fixture เสีย',
         hintEn: 'Change Model / Breakdown',
         icon: FilePlus2,
-      },
-      {
-        key: 'return',
-        labelTh: 'เบิก / คืน Fixture',
-        labelEn: 'Issue / Return',
-        hintTh: 'จ่ายจาก Stock / รับคืนเข้าคลังหรือ PM (ไม่ผ่าน Order)',
-        hintEn: 'Issue from stock / return to stock or PM (no order)',
-        icon: ArrowLeftRight,
       },
     ],
   },

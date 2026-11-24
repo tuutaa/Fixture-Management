@@ -4,13 +4,17 @@ import {
   BellRing,
   CalendarClock,
   CalendarDays,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  FileText,
+  Layers3,
   Printer,
   RefreshCw,
   Search,
   ShieldCheck,
+  Upload,
   Wrench,
 } from 'lucide-react'
 import api from '../lib/api'
@@ -80,6 +84,41 @@ const dateKey = (value) => {
   return toDateInput(value)
 }
 
+// Server exposes pmOverdueDays / needs4M on /api/pm; fall back to the exp date
+// so the same guard works if an older payload omits those fields.
+const overdueDaysOf = (row) => {
+  const explicit = Number(row?.pmOverdueDays)
+  if (Number.isFinite(explicit) && explicit > 0) return explicit
+  const days = daysUntil(row?.usage?.exp)
+  return days === null ? 0 : Math.max(0, -days)
+}
+
+const needs4MOf = (row) =>
+  row?.needs4M === true ||
+  (overdueDaysOf(row) > 7 && !(Array.isArray(row?.pmForms) ? row.pmForms : []).length)
+
+// Only in-use fixtures at or past their PM due date may be planned.
+const isPlanDue = (row) => {
+  const exp = row?.usage?.exp ? String(row.usage.exp).slice(0, 10) : ''
+  return (
+    row?.status === 'In Use' &&
+    (overdueDaysOf(row) > 0 || (Boolean(exp) && exp <= toDateInput(new Date())))
+  )
+}
+
+const planRowsOf = (list = []) => list.filter((row) => isPlanDue(row) && !needs4MOf(row))
+const blockedRowsOf = (list = []) => list.filter((row) => needs4MOf(row))
+
+const countPmStates = (list = []) => {
+  const has = (row, state) => (row.pmStates || []).includes(state)
+  return {
+    all: list.length,
+    preAlert: list.filter((row) => has(row, 'pre-alert') || has(row, 'usage-remind')).length,
+    onDue: list.filter((row) => has(row, 'on-due')).length,
+    overDue: list.filter((row) => has(row, 'over-due') || has(row, 'overdue-remind')).length,
+  }
+}
+
 export default function PMPage({ user }) {
   const { t, pmState } = useLabels()
   const sm = useServerMessage()
@@ -90,6 +129,8 @@ export default function PMPage({ user }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
+  const [lineFilter, setLineFilter] = useState('')
+  const [modelFilter, setModelFilter] = useState('')
   const [viewMonth, setViewMonth] = useState(() => {
     const now = new Date()
     return new Date(now.getFullYear(), now.getMonth(), 1)
@@ -101,7 +142,12 @@ export default function PMPage({ user }) {
   const [mError, setMError] = useState('')
   const [mQuery, setMQuery] = useState('')
 
+  /* ---- 4M document upload (line-by-line) ---- */
+  const [uploadFile, setUploadFile] = useState(null)
+  const [uploadBusy, setUploadBusy] = useState(false)
+
   /* ---- Modals ---- */
+  // target = { type: 'group', line, model, rows, blocked }
   const [target, setTarget] = useState(null)
   const [date, setDate] = useState('')
   const [verify, setVerify] = useState(null) // { fixture, result }
@@ -111,6 +157,8 @@ export default function PMPage({ user }) {
   const [sticker, setSticker] = useState(null)
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
+  const [expandedLines, setExpandedLines] = useState({})
+  const [showAllFixtures, setShowAllFixtures] = useState({})
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -132,59 +180,89 @@ export default function PMPage({ user }) {
     load()
   }, [load])
 
+  const lineOptions = useMemo(
+    () => [...new Set(rows.map((row) => row.line).filter(Boolean))].sort((a, b) =>
+      String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' }),
+    ),
+    [rows],
+  )
+
+  // PM is run per Line + Model — never per individual SN.
+  const modelOptions = useMemo(() => {
+    const scoped = lineFilter ? rows.filter((row) => row.line === lineFilter) : rows
+    return [...new Set(scoped.map((row) => row.model).filter(Boolean))].sort((a, b) =>
+      String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' }),
+    )
+  }, [rows, lineFilter])
+
+  const groupRows = useMemo(
+    () => rows.filter((row) =>
+      (!lineFilter || row.line === lineFilter) &&
+      (!modelFilter || row.model === modelFilter),
+    ),
+    [rows, lineFilter, modelFilter],
+  )
+  const groupMRows = useMemo(
+    () => mRows.filter((row) =>
+      (!lineFilter || row.line === lineFilter) &&
+      (!modelFilter || row.model === modelFilter),
+    ),
+    [mRows, lineFilter, modelFilter],
+  )
+
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    if (!needle) return rows
-    return rows.filter((row) =>
+    if (!needle) return groupRows
+    return groupRows.filter((row) =>
       [row.sn, row.line, row.model, row.type, row.step]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
         .includes(needle),
     )
-  }, [rows, query])
+  }, [groupRows, query])
 
   const maintenance = useMemo(() => {
     const needle = mQuery.trim().toLowerCase()
-    if (!needle) return mRows
-    return mRows.filter((row) =>
+    if (!needle) return groupMRows
+    return groupMRows.filter((row) =>
       [row.sn, row.line, row.model, row.process, row.position]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
         .includes(needle),
     )
-  }, [mRows, mQuery])
+  }, [groupMRows, mQuery])
 
   const counts = useMemo(() => {
     const has = (row, state) => (row.pmStates || []).includes(state)
     return {
-      all: rows.length,
-      preAlert: rows.filter((r) => has(r, 'pre-alert') || has(r, 'usage-remind')).length,
-      onDue: rows.filter((r) => has(r, 'on-due')).length,
-      overDue: rows.filter((r) => has(r, 'over-due') || has(r, 'overdue-remind')).length,
-      maintenance: mRows.length,
+      all: groupRows.length,
+      preAlert: groupRows.filter((r) => has(r, 'pre-alert') || has(r, 'usage-remind')).length,
+      onDue: groupRows.filter((r) => has(r, 'on-due')).length,
+      overDue: groupRows.filter((r) => has(r, 'over-due') || has(r, 'overdue-remind')).length,
+      maintenance: groupMRows.length,
     }
-  }, [rows, mRows])
+  }, [groupRows, groupMRows])
 
-  const flowCounts = useMemo(() => {
-    const needsPm = rows.filter(
-      (row) => row.status !== 'Maintenance' && (row.pmStates || []).some((state) => CALENDAR_STATES.includes(state)),
-    )
-    const planned = rows.filter((row) => row.status === 'Maintenance' && row.pmDate)
-    return { pre: needsPm.length, plan: planned.length, maintenance: mRows.length }
-  }, [rows, mRows])
-
+  // Calendar cells are line-level too: one chip per line with its fixture count,
+  // then the worklist below expands that line to show the individual fixtures.
   const calendarByDate = useMemo(() => {
     const map = new Map()
     const add = (key, row, state) => {
       if (!key) return
       if (!map.has(key)) map.set(key, new Map())
-      const bySn = map.get(key)
-      if (!bySn.has(row.sn)) bySn.set(row.sn, { row, states: new Set() })
-      bySn.get(row.sn).states.add(state)
+      const byLine = map.get(key)
+      const line = row.line || 'N/A'
+      if (!byLine.has(line)) {
+        byLine.set(line, { line, sns: new Set(), models: new Set(), states: new Set() })
+      }
+      const entry = byLine.get(line)
+      entry.sns.add(row.sn)
+      if (row.model) entry.models.add(row.model)
+      entry.states.add(state)
     }
-    for (const row of rows) {
+    for (const row of groupRows) {
       const expKey = dateKey(row.usage?.exp)
       for (const state of (row.pmStates || [])) {
         if (CALENDAR_STATES.includes(state)) add(expKey, row, state)
@@ -192,7 +270,7 @@ export default function PMPage({ user }) {
       if (row.pmDate) add(dateKey(row.pmDate), row, 'planned')
     }
     return map
-  }, [rows])
+  }, [groupRows])
 
   const monthCells = useMemo(() => {
     const first = new Date(viewMonth.getFullYear(), viewMonth.getMonth(), 1)
@@ -208,16 +286,115 @@ export default function PMPage({ user }) {
     state === 'planned' ? t('วางแผนแล้ว', 'Planned') : pmState(state)
   const todayKey = toDateInput(new Date())
 
+  const planRows = useMemo(() => planRowsOf(groupRows), [groupRows])
+  const blockedRows = useMemo(() => blockedRowsOf(groupRows), [groupRows])
+
+  // PM worklist is line-first: Line → Model → the fixtures actually used there.
+  const lineGroups = useMemo(() => {
+    const byLine = new Map()
+    for (const row of filtered) {
+      const line = row.line || 'N/A'
+      const model = row.model || 'N/A'
+      let lineGroup = byLine.get(line)
+      if (!lineGroup) {
+        lineGroup = { line, rows: [], models: new Map() }
+        byLine.set(line, lineGroup)
+      }
+      lineGroup.rows.push(row)
+      let modelGroup = lineGroup.models.get(model)
+      if (!modelGroup) {
+        modelGroup = { line, model, rows: [] }
+        lineGroup.models.set(model, modelGroup)
+      }
+      modelGroup.rows.push(row)
+    }
+
+    return [...byLine.values()]
+      .map((group) => {
+        const models = [...group.models.values()].map((modelGroup) => ({
+          ...modelGroup,
+          planRows: planRowsOf(modelGroup.rows),
+          blockedRows: blockedRowsOf(modelGroup.rows),
+          stats: countPmStates(modelGroup.rows),
+        }))
+        return {
+          ...group,
+          models,
+          stats: countPmStates(group.rows),
+          maintenanceCount: groupMRows.filter((row) => (row.line || 'N/A') === group.line).length,
+        }
+      })
+      .sort((a, b) => String(a.line).localeCompare(String(b.line), undefined, { numeric: true, sensitivity: 'base' }))
+  }, [filtered, groupMRows])
+
+  const blockMessage = (row) => {
+    const days = overdueDaysOf(row)
+    return t(
+      `Fixture ${row?.sn || ''} เกินกำหนด PM ${days} วัน — กรุณาแนบเอกสาร 4M ก่อนแก้ไขข้อมูล`,
+      `Fixture ${row?.sn || ''} is ${days} days overdue — attach the 4M document before editing`,
+    )
+  }
+
   const shiftMonth = (offset) =>
     setViewMonth((current) => new Date(current.getFullYear(), current.getMonth() + offset, 1))
 
-  const focusSection = (id) =>
-    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-
-  const openPlan = (row) => {
-    setTarget(row)
-    setDate(row.pmDate || (row.usage?.exp ? String(row.usage.exp).slice(0, 10) : '') || toDateInput(new Date()))
+  const openGroupPlanFor = (line, model) => {
+    const groupRowsForPlan = rows.filter((row) => row.line === line && row.model === model)
+    const plan = planRowsOf(groupRowsForPlan)
+    if (!line || !model || plan.length === 0) return
+    setTarget({
+      type: 'group',
+      line,
+      model,
+      rows: plan,
+      blocked: blockedRowsOf(groupRowsForPlan),
+    })
+    setDate(toDateInput(new Date()))
     setPassword('')
+    setLineFilter(line)
+    setModelFilter(model)
+  }
+
+  const focusGroup = (line, model) => {
+    setLineFilter(line)
+    setModelFilter(model)
+    setTarget(null)
+  }
+
+  const focusCalendarLine = (line) => {
+    setLineFilter(line)
+    setModelFilter('')
+    setQuery('')
+    setTarget(null)
+    setExpandedLines((current) => ({ ...current, [line]: true }))
+    document.getElementById('pm-worklist')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  const toggleLine = (line) =>
+    setExpandedLines((current) => ({ ...current, [line]: current[line] === false }))
+
+  const isLineExpanded = (line) => expandedLines[line] !== false
+
+  const uploadGroupForms = async () => {
+    if (!lineFilter || !modelFilter || !uploadFile) return
+    setUploadBusy(true)
+    try {
+      const res = await api.pmUploadGroup(lineFilter, modelFilter, uploadFile, user)
+      toast.success(
+        res?.message
+          ? sm(res.message)
+          : t(
+              `แนบเอกสาร 4M ให้ ${res?.count ?? 0} ตัวใน Line ${lineFilter} / Model ${modelFilter} แล้ว`,
+              `Attached the 4M document to ${res?.count ?? 0} fixture(s) in line ${lineFilter} / model ${modelFilter}`,
+            ),
+      )
+      setUploadFile(null)
+      await load()
+    } catch (err) {
+      toast.error(sm(err.message))
+    } finally {
+      setUploadBusy(false)
+    }
   }
 
   const openVerify = (fixture, result) => {
@@ -242,12 +419,33 @@ export default function PMPage({ user }) {
   }
 
   const savePlan = async () => {
-    if (!target || !date) return
+    if (!target || !date || target.rows.length === 0) return
     if (!(await checkPassword())) return
     setBusy(true)
     try {
-      await api.pmPlan(target.sn, user, date, '')
-      toast.success(t(`Plan PM ${target.sn} → PM & Maintenance`, `Planned PM for ${target.sn} → PM & Maintenance`))
+      const res = await api.pmPlan(
+        target.line,
+        target.model,
+        user,
+        date,
+        t('PM ตาม Line/Model', 'PM by line/model'),
+      )
+      toast.success(
+        res?.message
+          ? sm(res.message)
+          : t(
+              `วางแผน PM Line ${target.line} / Model ${target.model} ${res?.count ?? target.rows.length} ตัว → PM & Maintenance`,
+              `Planned PM for ${res?.count ?? target.rows.length} fixture(s) in line ${target.line} / model ${target.model} → PM & Maintenance`,
+            ),
+      )
+      if (res?.skipped?.length) {
+        toast.error(
+          t(
+            `ข้าม ${res.skipped.length} ตัวที่ต้องแนบ 4M ก่อน`,
+            `Skipped ${res.skipped.length} fixture(s) that need 4M first`,
+          ),
+        )
+      }
       setTarget(null)
       await load()
     } catch (err) {
@@ -290,61 +488,78 @@ export default function PMPage({ user }) {
   }
 
   const searchBox = (value, onChange, placeholder) => (
-    <Card className="p-3">
-      <div className="relative">
-        <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-        <Input
-          className="field-input-sm pl-9"
-          placeholder={placeholder}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-        />
-      </div>
-    </Card>
+    <div className="relative w-full">
+      <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+      <Input
+        className="field-input-sm pl-9"
+        placeholder={placeholder}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </div>
   )
 
-  const flowSteps = [
-    {
-      icon: BellRing,
-      title: t('1 · Pre-Alert / 80%', '1 · Pre-Alert / 80%'),
-      desc: t('ตรวจสอบรายการใกล้ครบ', 'Review due-soon fixtures'),
-      value: flowCounts.pre,
-      accent: 'bg-orange-500',
-      shell: 'border-orange-100 bg-orange-50/60',
-      countTone: 'bg-white text-orange-700',
-      section: 'pm-worklist',
-    },
-    {
-      icon: CalendarClock,
-      title: t('2 · Plan PM', '2 · Plan PM'),
-      desc: t('เลือกวันที่ + รหัสผ่าน', 'Pick date + confirm password'),
-      value: flowCounts.plan,
-      accent: 'bg-purple-500',
-      shell: 'border-purple-100 bg-purple-50/60',
-      countTone: 'bg-white text-purple-700',
-      section: 'pm-worklist',
-    },
-    {
-      icon: Wrench,
-      title: t('3 · Maintenance', '3 · Maintenance'),
-      desc: t('รอตรวจสอบในคิวซ่อม', 'Waiting in repair queue'),
-      value: flowCounts.maintenance,
-      accent: 'bg-blue-500',
-      shell: 'border-blue-100 bg-blue-50/60',
-      countTone: 'bg-white text-blue-700',
-      section: 'pm-maintenance',
-    },
-    {
-      icon: ShieldCheck,
-      title: t('4 · Verify + Record', '4 · Verify + Record'),
-      desc: t('OK reset due / NG ติดตาม Order', 'OK reset due / NG track order'),
-      value: flowCounts.maintenance,
-      accent: 'bg-emerald-500',
-      shell: 'border-emerald-100 bg-emerald-50/60',
-      countTone: 'bg-white text-emerald-700',
-      section: 'pm-maintenance',
-    },
-  ]
+  const renderFixtureCard = (row) => {
+    const states = (row.pmStates || []).filter((state) => CALENDAR_STATES.includes(state))
+    const forms = Array.isArray(row.pmForms) ? row.pmForms : []
+    const percent = Math.min(100, Number(row.usagePercent) || 0)
+    return (
+      <div key={row.sn} className="rounded-xl border border-slate-200 bg-white p-2.5">
+        <div className="flex items-start justify-between gap-2">
+          <span className="font-mono text-[11px] font-black text-slate-800">{row.sn}</span>
+          <FixtureStatusBadge status={row.status} />
+        </div>
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {states.slice(0, 3).map((state) => (
+            <Badge key={state} tone={PM_TONE[state]} dot>
+              {stateLabel(state)}
+            </Badge>
+          ))}
+          {states.length > 3 ? (
+            <span className="rounded-lg bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-600">
+              +{states.length - 3}
+            </span>
+          ) : null}
+          {states.length === 0 ? <span className="text-[10px] text-slate-400">-</span> : null}
+        </div>
+        <div className="mt-2 flex items-center justify-between gap-2 text-[10px] font-semibold text-slate-500">
+          <span>
+            {t('Exp', 'Exp')} <b className="font-mono text-slate-700">{formatDate(row.usage?.exp)}</b>
+          </span>
+          <span>
+            PM <b className="font-mono text-blue-700">{row.pmDate || '-'}</b>
+          </span>
+        </div>
+        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+          <div
+            className={cn('h-full rounded-full', percent >= 80 ? 'bg-orange-500' : 'bg-blue-500')}
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-1 text-[9px] font-bold text-slate-400">
+          <span>
+            {Number(row.usage?.current) || 0}/{Number(row.usage?.max) || 0} · {percent}%
+          </span>
+          {forms.length ? (
+            <div className="flex flex-wrap gap-1">
+              {forms.map((url, index) => (
+                <a
+                  key={`${url}-${index}`}
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={t('เปิดเอกสาร 4M', 'Open 4M document')}
+                  className="inline-flex items-center gap-1 rounded-lg bg-red-50 px-1.5 py-0.5 font-bold text-red-600 hover:bg-red-100 hover:text-red-800"
+                >
+                  <FileText className="h-3 w-3" /> 4M {index + 1}
+                </a>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-5">
@@ -352,7 +567,7 @@ export default function PMPage({ user }) {
         eyebrow={t('ซ่อมบำรุง', 'Maintenance')}
         icon={Wrench}
         title={t('PM และซ่อมบำรุง', 'PM & Maintenance')}
-        description={t('Pre-Alert / 80% → Plan PM → PM On Due / Over Due → PM & Maintenance → Verify + Record (OK / NG)', 'Pre-Alert / 80% → Plan PM → PM On Due / Over Due → PM & Maintenance → Verify + Record (OK / NG)')}
+        description={t('ดูภาพรวมราย Line → Model → Fixture ที่ใช้งานจริง พร้อมวางแผน PM เป็นกลุ่มและจัดการคิวซ่อมในหน้าเดียว', 'Review lines, their models, and the fixtures in use — plan PM by group and manage the repair queue in one place')}
         actions={
           <Button variant="secondary" icon={RefreshCw} onClick={load}>
             {t('รีเฟรช', 'Refresh')}
@@ -360,68 +575,165 @@ export default function PMPage({ user }) {
         }
       />
 
-      {/* Flow guide — each step jumps to the real working area */}
-      <Card className="p-3 sm:p-4">
-        <p className="mb-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-500">
-          {t('ขั้นตอนการทำงาน PM', 'PM workflow')}
-        </p>
-        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-          {flowSteps.map((step) => {
-            const Icon = step.icon
-            return (
-              <button
-                key={step.title}
-                type="button"
-                onClick={() => focusSection(step.section)}
-                className={cn(
-                  'group flex items-center gap-3 rounded-2xl border p-3 text-left transition hover:-translate-y-0.5 hover:shadow-md',
-                  step.shell,
-                )}
-              >
-                <span
-                  className={cn(
-                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-white shadow-sm',
-                    step.accent,
-                  )}
-                >
-                  <Icon className="h-4 w-4" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[11px] font-black text-slate-800">{step.title}</span>
-                  <span className="block truncate text-[10px] font-semibold text-slate-500">{step.desc}</span>
-                </span>
-                <span className={cn('rounded-lg px-2 py-1 text-xs font-black', step.countTone)}>
-                  {step.value}
-                </span>
-              </button>
-            )
-          })}
-        </div>
-      </Card>
-
       {/* ---------- PM worklist ---------- */}
       <section id="pm-worklist" className="scroll-mt-4 space-y-3">
-        <div className="flex items-center gap-2">
-          <ClipboardList className="h-4 w-4 text-blue-500" />
-          <h2 className="text-xs font-black uppercase tracking-[0.14em] text-slate-600">{t('รายงาน PM', 'PM Worklist')}</h2>
-          <span className="rounded-lg bg-blue-100 px-2 py-0.5 text-[11px] font-black text-blue-700">{rows.length}</span>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <ClipboardList className="h-4 w-4 text-blue-500" />
+            <h2 className="text-[13px] font-bold text-slate-800">{t('รายงาน PM', 'PM Worklist')}</h2>
+            <span className="rounded-lg bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">
+              {lineGroups.length} {t('Line', 'lines')} · {groupRows.length} {t('Fixture', 'fixtures')}
+            </span>
+          </div>
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+            <select
+              aria-label={t('กรองตาม Line', 'Filter by line')}
+              className="field-input-sm w-full sm:w-40"
+              value={lineFilter}
+              onChange={(event) => {
+                setLineFilter(event.target.value)
+                setModelFilter('')
+                setTarget(null)
+              }}
+            >
+              <option value="">{t('ทุก Line', 'All lines')}</option>
+              {lineOptions.map((line) => (
+                <option key={line} value={line}>
+                  {line}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label={t('กรองตาม Model', 'Filter by model')}
+              className="field-input-sm w-full font-mono sm:w-52"
+              value={modelFilter}
+              onChange={(event) => {
+                setModelFilter(event.target.value)
+                setTarget(null)
+              }}
+            >
+              <option value="">{t('ทุก Model', 'All models')}</option>
+              {modelOptions.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
+            <div className="w-full sm:w-64">{searchBox(query, setQuery, t('ค้นหา Line / Model / SN…', 'Search line / model / SN…'))}</div>
+          </div>
         </div>
 
-        <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-2 2xl:grid-cols-3">
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
+          <Button
+            size="sm"
+            variant="purple"
+            icon={CalendarClock}
+            disabled={busy || !lineFilter || !modelFilter || planRows.length === 0}
+            onClick={() => openGroupPlanFor(lineFilter, modelFilter)}
+          >
+            {t('PM ตาม Line/Model', 'PM by line/model')}
+          </Button>
+          <span className="text-[10px] font-semibold text-slate-500">
+            {!lineFilter
+              ? t('เลือก Line และ Model ก่อนวางแผน PM', 'Select a line and model before planning PM')
+              : !modelFilter
+                ? t(`Line ${lineFilter} · เลือก Model ก่อนวางแผน PM`, `Line ${lineFilter} · select a model before planning PM`)
+                : planRows.length === 0
+                  ? t(`Line ${lineFilter} / ${modelFilter} ไม่มี Fixture ที่ถึงกำหนด PM`, `No due fixture in ${lineFilter} / ${modelFilter} to plan`)
+                  : t(`Line ${lineFilter} / ${modelFilter} · พร้อมวางแผน ${planRows.length} ตัว`, `${lineFilter} / ${modelFilter} · ${planRows.length} fixture(s) ready to plan`)}
+          </span>
+          {lineFilter && modelFilter && blockedRows.length > 0 ? (
+            <span className="ml-auto text-[10px] font-bold text-red-600">
+              {t(`ต้องแนบ 4M ${blockedRows.length} ตัวก่อน`, `${blockedRows.length} fixture(s) need 4M first`)}
+            </span>
+          ) : null}
+        </div>
+
+        {lineFilter && modelFilter && blockedRows.length > 0 ? (
+          <Card className="border-red-200 bg-red-50/50 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <p className="flex items-center gap-2 text-[13px] font-black text-red-700">
+                  <FileText className="h-4 w-4" />
+                  {t(`เอกสาร 4M ที่ขาด · ${lineFilter} / ${modelFilter}`, `Missing 4M document · ${lineFilter} / ${modelFilter}`)}
+                </p>
+                <p className="mt-1 text-[11px] font-semibold text-red-600">
+                  {t(
+                    'Fixture เกินกำหนด PM มากกว่า 7 วันโดยไม่มีเอกสาร 4M — การแก้ไขและวางแผน PM ถูกบล็อก',
+                    'Fixtures over 7 days PM overdue without a 4M document — edits and PM planning are blocked',
+                  )}
+                </p>
+              </div>
+              <Badge tone="red">
+                {t(`ต้องแนบ ${blockedRows.length} ตัว`, `${blockedRows.length} to attach`)}
+              </Badge>
+            </div>
+            <ul className="mt-2 grid gap-1 sm:grid-cols-2">
+              {blockedRows.map((row, index) => (
+                <li key={`${row.sn}-${index}`} className="text-[10px] font-semibold leading-snug text-red-600">
+                  • {blockMessage(row)}
+                </li>
+              ))}
+            </ul>
+            <div className="mt-3 flex flex-wrap items-end gap-3 border-t border-red-200 pt-3">
+              <label className="flex flex-col gap-1 text-[10px] font-bold text-red-700">
+                {t('ไฟล์เอกสาร 4M (PDF / รูปภาพ)', '4M document file (PDF / image)')}
+                <input
+                  type="file"
+                  accept=".pdf,image/*"
+                  disabled={uploadBusy}
+                  onChange={(event) => {
+                    setUploadFile(event.target.files?.[0] || null)
+                    event.target.value = ''
+                  }}
+                  className="block w-full max-w-xs text-[11px] font-medium text-slate-600"
+                />
+              </label>
+              <Button
+                size="sm"
+                variant="danger"
+                icon={Upload}
+                disabled={uploadBusy || !uploadFile}
+                onClick={uploadGroupForms}
+              >
+                {uploadBusy
+                  ? t('กำลังแนบเอกสาร…', 'Uploading…')
+                  : t('แนบ 4M ทั้งกลุ่ม', 'Attach 4M for whole group')}
+              </Button>
+              {uploadFile ? (
+                <span className="max-w-[240px] truncate font-mono text-[10px] text-slate-500">
+                  {uploadFile.name}
+                </span>
+              ) : null}
+            </div>
+          </Card>
+        ) : (!lineFilter || !modelFilter) && blockedRows.length > 0 ? (
+          <Card className="border-amber-200 bg-amber-50/50 p-3">
+            <p className="flex items-center gap-2 text-[11px] font-bold text-amber-700">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              {t(
+                `มี ${blockedRows.length} ตัวที่ต้องแนบเอกสาร 4M — เลือก Line และ Model ก่อนแนบ`,
+                `${blockedRows.length} fixture(s) need a 4M document — select a line and model before uploading`,
+              )}
+            </p>
+          </Card>
+        ) : null}
+
+        {/* KPI first, calendar below it — full width so scanning is uninterrupted. */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
           <StatCard label={t('ทั้งหมด', 'All')} value={counts.all} tone="blue" icon={ClipboardList} />
           <StatCard label={t('แจ้งล่วงหน้า / 80%', 'Pre-Alert / 80%')} value={counts.preAlert} tone="orange" icon={BellRing} />
           <StatCard label={t('PM ถึงกำหนด', 'PM On Due')} value={counts.onDue} tone="purple" icon={CalendarClock} />
           <StatCard label={t('PM เกินกำหนด', 'PM Over Due')} value={counts.overDue} tone="red" icon={AlertTriangle} />
           <StatCard label={t('กำลังซ่อม', 'In Maintenance')} value={counts.maintenance} tone="orange" icon={Wrench} />
-          </div>
+        </div>
 
         {!loading && !error ? (
-          <Card className="p-2.5 sm:p-3">
+          <Card className="w-full p-3 sm:p-4">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <CalendarDays className="h-4 w-4 text-blue-600" />
-                <p className="text-xs font-black text-slate-800">{t('ปฏิทิน PM', 'PM calendar')}</p>
+                <p className="text-sm font-black text-slate-800">{t('ปฏิทิน PM', 'PM calendar')}</p>
               </div>
               <div className="flex items-center gap-0.5">
                 <Button
@@ -431,7 +743,7 @@ export default function PMPage({ user }) {
                   onClick={() => shiftMonth(-1)}
                   aria-label={t('เดือนก่อนหน้า', 'Previous month')}
                 />
-                <span className="min-w-[86px] text-center text-[10px] font-black text-slate-700">
+                <span className="min-w-[92px] text-center text-xs font-black text-slate-700">
                   {compactMonthLabel}
                 </span>
                 <Button
@@ -450,11 +762,11 @@ export default function PMPage({ user }) {
                 </Badge>
               ))}
             </div>
-            <div className="mt-2 grid grid-cols-7 gap-1">
+            <div className="mt-2 grid grid-cols-7 gap-1.5">
               {weekdays.map((day, index) => (
                 <div
                   key={`${day}-${index}`}
-                  className="pb-0.5 text-center text-[8px] font-black uppercase tracking-[0.1em] text-slate-400"
+                  className="pb-0.5 text-center text-[10px] font-black uppercase tracking-[0.08em] text-slate-400"
                 >
                   {day}
                 </div>
@@ -466,30 +778,33 @@ export default function PMPage({ user }) {
                   <div
                     key={`${key}-${index}`}
                     className={cn(
-                      'min-h-[56px] rounded-lg border p-1',
+                      'min-h-[86px] rounded-xl border p-1.5 sm:p-2',
                       key === todayKey ? 'border-blue-300 bg-blue-50/60' : 'border-slate-200 bg-white',
                       cell.getMonth() !== viewMonth.getMonth() && 'opacity-40',
                     )}
                   >
-                    <p className="text-[9px] font-bold text-slate-500">{cell.getDate()}</p>
-                    {entries.slice(0, 2).map(({ row, states }) => (
+                    <p className="text-[11px] font-black text-slate-500">{cell.getDate()}</p>
+                    {entries.slice(0, 3).map(({ line, sns, models, states }, entryIndex) => (
                       <button
-                        key={row.sn}
+                        key={`${key}-${line}-${entryIndex}`}
                         type="button"
-                        title={`${row.sn} · ${[...states].map(stateLabel).join(', ')}`}
-                        onClick={() => setQuery(row.sn)}
-                        className="mt-0.5 flex w-full items-center gap-1 rounded-md bg-slate-100 px-1 py-0.5 text-left font-mono text-[8px] font-bold text-blue-700 hover:bg-blue-100 hover:text-blue-900"
+                        title={`${t('Line', 'Line')} ${line} · ${sns.size} ${t('Fixture', 'fixtures')} · ${[...models].join(', ') || '-'} · ${[...states].map(stateLabel).join(', ')}`}
+                        onClick={() => focusCalendarLine(line)}
+                        className="mt-1 flex w-full items-center gap-1 rounded-md bg-slate-100 px-1.5 py-1 text-left text-[10px] font-black text-blue-700 hover:bg-blue-100 hover:text-blue-900"
                       >
                         <span className="flex shrink-0 gap-0.5">
                           {[...states].map((state) => (
-                            <span key={state} className={cn('h-1 w-1 rounded-full', PM_DOT[PM_TONE[state]])} />
+                            <span key={state} className={cn('h-1.5 w-1.5 rounded-full', PM_DOT[PM_TONE[state]])} />
                           ))}
                         </span>
-                        <span className="truncate">{row.sn}</span>
+                        <span className="truncate font-sans">{line}</span>
+                        <span className="ml-auto shrink-0 font-mono text-[9px] font-bold text-blue-700">
+                          {sns.size}
+                        </span>
                       </button>
                     ))}
-                    {entries.length > 2 ? (
-                      <p className="mt-0.5 text-[8px] font-bold text-slate-400">+{entries.length - 2}</p>
+                    {entries.length > 3 ? (
+                      <p className="mt-1 text-[9px] font-bold text-slate-400">+{entries.length - 3}</p>
                     ) : null}
                   </div>
                 )
@@ -497,9 +812,6 @@ export default function PMPage({ user }) {
             </div>
           </Card>
         ) : null}
-        </div>
-
-        {searchBox(query, setQuery, t('ค้นหา SN / Line / Model…', 'Search SN / Line / Model…'))}
 
         {loading ? (
           <Card>
@@ -509,111 +821,148 @@ export default function PMPage({ user }) {
           <Card>
             <ErrorState message={sm(error)} onRetry={load} />
           </Card>
-        ) : filtered.length === 0 ? (
+        ) : lineGroups.length === 0 ? (
           <Card>
-            <EmptyState icon={CalendarClock} title={t('ไม่มี Fixture', 'No fixtures')} />
+            <EmptyState
+              icon={Layers3}
+              title={t('ไม่มี Line ที่ตรงกับเงื่อนไข', 'No matching line')}
+              description={t('ลองเปลี่ยน Line / Model หรือคำค้นหา', 'Try another line, model, or search term')}
+            />
           </Card>
         ) : (
-          <Card className="overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[940px] text-left">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50/60 text-[9px] font-bold uppercase tracking-[0.12em] text-slate-400">
-                    <th className="px-4 py-2.5">{t('Serial Number', 'Serial Number')}</th>
-                    <th className="px-4 py-2.5">{t('Line', 'Line')}</th>
-                    <th className="px-4 py-2.5">{t('Model', 'Model')}</th>
-                    <th className="px-4 py-2.5">{t('สถานะ', 'Status')}</th>
-                    <th className="px-4 py-2.5">{t('สัญญาณ PM', 'PM signal')}</th>
-                    <th className="px-4 py-2.5">{t('การใช้งาน', 'Usage')}</th>
-                    <th className="px-4 py-2.5">{t('Exp', 'Exp')}</th>
-                    <th className="px-4 py-2.5">{t('PM date', 'PM date')}</th>
-                    <th className="px-4 py-2.5 text-right">{t('การดำเนินการ', 'Action')}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filtered.map((row) => {
-                    const states = (row.pmStates || []).filter((state) => CALENDAR_STATES.includes(state))
-                    const percent = Math.min(100, Number(row.usagePercent) || 0)
-                    return (
-                      <tr key={row.sn} className="hover:bg-slate-50/70">
-                        <td className="px-4 py-2.5 font-mono text-[11px] font-bold text-slate-700">{row.sn}</td>
-                        <td className="px-4 py-2.5 text-[11px] text-slate-600">{row.line || '-'}</td>
-                        <td className="px-4 py-2.5 font-mono text-[10px] text-slate-600">{row.model || '-'}</td>
-                        <td className="px-4 py-2.5">
-                          <FixtureStatusBadge status={row.status} />
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <div className="flex flex-wrap gap-1">
-                            {states.slice(0, 2).map((state) => (
-                              <Badge key={state} tone={PM_TONE[state]} dot>
-                                {stateLabel(state)}
-                              </Badge>
-                            ))}
-                            {states.length > 2 ? (
-                              <span className="rounded-lg bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-600">
-                                +{states.length - 2}
-                              </span>
+          <div className="space-y-3">
+            {lineGroups.map((group) => {
+              const open = isLineExpanded(group.line)
+              return (
+                <Card key={group.line} className="overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => toggleLine(group.line)}
+                    aria-expanded={open}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-50"
+                  >
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                      <Layers3 className="h-4 w-4" strokeWidth={2.2} />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-[13px] font-black text-slate-900">
+                        {t('Line', 'Line')} {group.line}
+                      </span>
+                      <span className="block text-[10px] font-semibold text-slate-400">
+                        {group.models.length} {t('Model', 'models')} · {group.rows.length} {t('Fixture', 'fixtures')}
+                        {group.maintenanceCount > 0
+                          ? ` · ${group.maintenanceCount} ${t('กำลังซ่อม', 'in maintenance')}`
+                          : ''}
+                      </span>
+                    </span>
+                    <span className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
+                      <Badge tone="red">{t('เกินกำหนด', 'Overdue')} {group.stats.overDue}</Badge>
+                      <Badge tone="purple">{t('ถึงกำหนด', 'On due')} {group.stats.onDue}</Badge>
+                      <Badge tone="orange">{t('แจ้งล่วงหน้า', 'Pre-alert')} {group.stats.preAlert}</Badge>
+                    </span>
+                    <ChevronDown
+                      className={cn(
+                        'h-4 w-4 shrink-0 text-slate-400 transition-transform',
+                        open && 'rotate-180',
+                      )}
+                    />
+                  </button>
+
+                  {open ? (
+                    <div className="space-y-3 border-t border-slate-100 bg-slate-50/50 p-3 sm:p-4">
+                      {group.models.map((modelGroup) => {
+                        const modelKey = `${group.line}|${modelGroup.model}`
+                        const limit = showAllFixtures[modelKey] ? modelGroup.rows.length : 12
+                        return (
+                          <div key={modelKey} className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-3 py-2.5">
+                              <div className="min-w-0">
+                                <p className="truncate font-mono text-[12px] font-black text-slate-800">
+                                  {modelGroup.model}
+                                </p>
+                                <p className="text-[10px] font-semibold text-slate-400">
+                                  {modelGroup.rows.length} {t('Fixture', 'fixtures')} ·{' '}
+                                  {t('พร้อม PM', 'ready')} {modelGroup.planRows.length} ·{' '}
+                                  {t('ติด 4M', '4M blocked')} {modelGroup.blockedRows.length}
+                                </p>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="secondary"
+                                  onClick={() => focusGroup(group.line, modelGroup.model)}
+                                >
+                                  {t('เลือกกลุ่มนี้', 'Select group')}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="purple"
+                                  icon={CalendarClock}
+                                  disabled={busy || modelGroup.planRows.length === 0}
+                                  onClick={() => openGroupPlanFor(group.line, modelGroup.model)}
+                                >
+                                  {t('PM กลุ่มนี้', 'PM this group')}
+                                </Button>
+                              </div>
+                            </div>
+                            {modelGroup.blockedRows.length > 0 ? (
+                              <p className="border-b border-red-100 bg-red-50/70 px-3 py-1.5 text-[10px] font-bold text-red-600">
+                                {t(
+                                  `ต้องแนบ 4M ${modelGroup.blockedRows.length} ตัวก่อนวางแผนกลุ่มนี้`,
+                                  `${modelGroup.blockedRows.length} fixture(s) need 4M before planning this group`,
+                                )}
+                              </p>
                             ) : null}
-                            {states.length === 0 ? (
-                              <span className="text-[10px] text-slate-400">-</span>
+                            <div className="grid gap-2 p-3 sm:grid-cols-2 xl:grid-cols-3">
+                              {modelGroup.rows.slice(0, limit).map(renderFixtureCard)}
+                            </div>
+                            {modelGroup.rows.length > 12 ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setShowAllFixtures((current) => ({
+                                    ...current,
+                                    [modelKey]: !current[modelKey],
+                                  }))
+                                }
+                                className="w-full border-t border-slate-100 py-2 text-center text-[10px] font-black text-blue-600 hover:bg-blue-50"
+                              >
+                                {showAllFixtures[modelKey]
+                                  ? t('แสดงน้อยลง', 'Show less')
+                                  : t(
+                                      `แสดง Fixture ทั้งหมด ${modelGroup.rows.length} ตัว`,
+                                      `Show all ${modelGroup.rows.length} fixtures`,
+                                    )}
+                              </button>
                             ) : null}
                           </div>
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <div className="w-24">
-                            <div className="flex items-center justify-between text-[9px] font-bold text-slate-500">
-                              <span>
-                                {Number(row.usage?.current) || 0}/{Number(row.usage?.max) || 0}
-                              </span>
-                              <span>{percent}%</span>
-                            </div>
-                            <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-                              <div
-                                className={cn('h-full rounded-full', percent >= 80 ? 'bg-orange-500' : 'bg-blue-500')}
-                                style={{ width: `${percent}%` }}
-                              />
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-4 py-2.5 font-mono text-[11px] text-slate-500">
-                          {formatDate(row.usage?.exp)}
-                        </td>
-                        <td className="px-4 py-2.5 font-mono text-[11px] font-bold text-blue-700">
-                          {row.pmDate || '-'}
-                        </td>
-                        <td className="px-4 py-2.5 text-right">
-                          <Button
-                            size="sm"
-                            variant="warning"
-                            disabled={row.status === 'Maintenance'}
-                            onClick={() => openPlan(row)}
-                          >
-                            {row.status === 'Maintenance' ? t('อยู่ในคิวซ่อม', 'In repair queue') : t('วางแผน PM', 'Plan PM')}
-                          </Button>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </Card>
+                        )
+                      })}
+                    </div>
+                  ) : null}
+                </Card>
+              )
+            })}
+          </div>
         )}
       </section>
 
       {/* ---------- Maintenance queue ---------- */}
       <section id="pm-maintenance" className="scroll-mt-4 space-y-3 border-t border-slate-100 pt-4">
-        <div className="flex items-center gap-2">
-          <Wrench className="h-4 w-4 text-orange-500" />
-          <h2 className="text-xs font-black uppercase tracking-[0.14em] text-slate-600">
-            {t('กำลังซ่อม · Verify + Record', 'In Maintenance · Verify + Record')}
-          </h2>
-          <span className="rounded-lg bg-orange-100 px-2 py-0.5 text-[11px] font-black text-orange-700">
-            {mRows.length}
-          </span>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Wrench className="h-4 w-4 text-orange-500" />
+            <h2 className="text-[13px] font-bold text-slate-800">
+              {t('กำลังซ่อม · Verify + Record', 'In Maintenance · Verify + Record')}
+            </h2>
+            <span className="rounded-lg bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">
+              {maintenance.length}
+            </span>
+          </div>
+          <div className="w-full sm:w-72">
+            {searchBox(mQuery, setMQuery, t('ค้นหา SN / Line / Model / Position…', 'Search SN / Line / Model / Position…'))}
+          </div>
         </div>
-
-        {searchBox(mQuery, setMQuery, t('ค้นหา SN / Line / Model / Position…', 'Search SN / Line / Model / Position…'))}
 
         {mLoading ? (
           <Card>
@@ -633,10 +982,10 @@ export default function PMPage({ user }) {
           </Card>
         ) : (
           <div className="grid gap-3 md:grid-cols-2">
-            {maintenance.map((row) => {
+            {maintenance.map((row, index) => {
               const days = daysUntil(row.usage?.exp)
               return (
-                <Card key={row.sn} className="space-y-3 p-4">
+                <Card key={`${row.sn}-${index}`} className="space-y-3 p-4">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
@@ -702,21 +1051,30 @@ export default function PMPage({ user }) {
         )}
       </section>
 
-      {/* ---------- Plan PM modal (password required) ---------- */}
+      {/* ---------- Plan PM modal (line + model group, password required) ---------- */}
       <Modal
         open={Boolean(target)}
         onClose={() => (busy ? null : setTarget(null))}
-        title={target ? t(`วางแผน PM · ${target.sn}`, `Plan PM · ${target.sn}`) : t('วางแผน PM', 'Plan PM')}
-        subtitle={t('ส่งเข้า PM & Maintenance', 'Sent to PM & Maintenance')}
+        title={target
+          ? t(`วางแผน PM · ${target.line} / ${target.model}`, `Plan PM · ${target.line} / ${target.model}`)
+          : t('วางแผน PM', 'Plan PM')}
+        subtitle={t(
+          `ส่งเข้า PM & Maintenance · ${target?.rows.length || 0} ตัว`,
+          `Sent to PM & Maintenance · ${target?.rows.length || 0} fixture(s)`,
+        )}
         icon={CalendarClock}
         tone="orange"
-        size="sm"
+        size="md"
         footer={
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setTarget(null)} disabled={busy}>
               {t('ยกเลิก', 'Cancel')}
             </Button>
-            <Button variant="warning" onClick={savePlan} disabled={busy || !date}>
+            <Button
+              variant="warning"
+              onClick={savePlan}
+              disabled={busy || !date || !target?.rows.length}
+            >
               {busy ? t('กำลังบันทึก…', 'Saving…') : t('วางแผน PM', 'Plan PM')}
             </Button>
           </div>
@@ -724,9 +1082,35 @@ export default function PMPage({ user }) {
       >
         {target ? (
           <div className="space-y-3">
-            <p className="text-[11px] text-slate-500">
-              {target.line} · {target.model}
-            </p>
+            <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+              <p className="text-[10px] font-black uppercase tracking-[0.12em] text-slate-500">
+                {t('Fixture ที่จะวางแผน', 'Fixtures to plan')} ({target.rows.length})
+              </p>
+              <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto">
+                {target.rows.map((row, index) => (
+                  <li key={`${row.sn}-${index}`} className="text-[11px] font-bold text-slate-700">
+                    <span className="font-mono">{row.sn}</span>
+                    <span className="ml-2 font-medium text-slate-400">
+                      {row.model || '-'} · {formatDate(row.usage?.exp)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            {target.blocked?.length ? (
+              <div className="rounded-xl border border-red-200 bg-red-50/60 p-3">
+                <p className="text-[10px] font-black uppercase tracking-[0.12em] text-red-600">
+                  {t('ข้าม — ต้องแนบเอกสาร 4M ก่อน', 'Skipped — 4M document required first')}
+                </p>
+                <ul className="mt-2 space-y-1">
+                  {target.blocked.map((row, index) => (
+                    <li key={`${row.sn}-${index}`} className="text-[10px] font-semibold leading-snug text-red-600">
+                      {blockMessage(row)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             <FormField label={t('วันที่ PM', 'PM date')}>
               <Input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
             </FormField>

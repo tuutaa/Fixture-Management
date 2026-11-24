@@ -119,6 +119,7 @@ export const api = {
   createFixture: (payload) => request('/fixtures', { method: 'POST', body: payload }),
   updateFixture: (sn, payload) =>
     request(`/fixtures/${encodeURIComponent(sn)}`, { method: 'PUT', body: payload }),
+  updateFixtureExpBulk: (payload) => request('/fixtures/due-date', { method: 'POST', body: payload }),
   deleteFixture: (sn, user) =>
     request(`/fixtures/${encodeURIComponent(sn)}`, { method: 'DELETE', body: { user } }),
 
@@ -140,6 +141,8 @@ export const api = {
   requests: ({ status, type, empId, signal } = {}) =>
     request(withQuery('/requests', { status, type, empId }), { signal }),
   request: (requestId) => request(`/requests/${encodeURIComponent(requestId)}`),
+  changeModelSlots: (date, signal) =>
+    request(withQuery('/requests/change-model-slots', { date }), { signal }),
   createRequest: (payload) => request('/requests', { method: 'POST', body: payload }),
   acceptRequest: (requestId, user) =>
     request(`/requests/${encodeURIComponent(requestId)}/accept`, { method: 'PUT', body: { user } }),
@@ -151,20 +154,20 @@ export const api = {
     request(`/requests/${encodeURIComponent(requestId)}/complete`, { method: 'PUT', body: { user } }),
   scanPlan: (requestId) =>
     request(`/requests/${encodeURIComponent(requestId)}/scan-plan`),
-  scanRequest: (requestId, sn, user) =>
+  scanRequest: (requestId, sn, user, phase) =>
     request(`/requests/${encodeURIComponent(requestId)}/scan`, {
       method: 'POST',
-      body: { sn, user },
+      body: { sn, user, ...(phase ? { phase } : {}) },
     }),
   confirmScan: (requestId, user) =>
     request(`/requests/${encodeURIComponent(requestId)}/confirm-scan`, {
       method: 'POST',
       body: { user },
     }),
-  resetScan: (requestId, user) =>
+  resetScan: (requestId, user, phase) =>
     request(`/requests/${encodeURIComponent(requestId)}/reset-scan`, {
       method: 'POST',
-      body: { user },
+      body: { user, ...(phase ? { phase } : {}) },
     }),
   breakdownRequest: (requestId, action, sn, user) =>
     request(`/requests/${encodeURIComponent(requestId)}/breakdown`, {
@@ -176,15 +179,10 @@ export const api = {
   deleteRequest: (requestId) =>
     request(`/requests/${encodeURIComponent(requestId)}`, { method: 'DELETE' }),
 
-  /* Manual Issue / Return (backup flow, no Order/Request) */
-  issueFixture: (payload) => request('/issue', { method: 'POST', body: payload }),
-  returnList: (signal) => request('/return', { signal }),
-  returnFixture: (payload) => request('/return', { method: 'POST', body: payload }),
-
   /* PM Checklist Phase 2 */
   pm: (signal) => request('/pm', { signal }),
-  pmPlan: (sn, user, date, note) =>
-    request('/pm/plan', { method: 'POST', body: { sn, user, date, note } }),
+  pmPlan: (line, model, user, date, note) =>
+    request('/pm/plan', { method: 'POST', body: { line, model, user, date, note } }),
   pmExtend: (sn, days, user, formUrl) =>
     request('/pm/extend', { method: 'POST', body: { sn, days, user, formUrl } }),
   pmAssign: (sn, payload = {}) => request('/pm/assign', { method: 'POST', body: { sn, ...payload } }),
@@ -194,6 +192,19 @@ export const api = {
     if (user) form.append('user', JSON.stringify(user))
     form.append('file', file)
     const response = await fetch(`${API_BASE}/pm/forms`, { method: 'POST', body: form })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) {
+      throw new ApiError(payload?.message || `Upload failed (${response.status})`, response.status, payload)
+    }
+    return payload
+  },
+  pmUploadGroup: async (line, model, file, user) => {
+    const form = new FormData()
+    form.append('line', line)
+    form.append('model', model)
+    if (user) form.append('user', JSON.stringify(user))
+    form.append('file', file)
+    const response = await fetch(`${API_BASE}/pm/forms/group`, { method: 'POST', body: form })
     const payload = await response.json().catch(() => null)
     if (!response.ok) {
       throw new ApiError(payload?.message || `Upload failed (${response.status})`, response.status, payload)

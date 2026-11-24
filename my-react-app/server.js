@@ -150,11 +150,15 @@ const fixtureDetailSchema = new mongoose.Schema(
       exp: String,
       storage: String,
       usedLine: String, // Line ที่ Fixture ถูกใช้งานอยู่ (อัปเดตตอนสแกนจ่าย)
+      inUseAt: String, // วันที่ล่าสุดที่เปลี่ยน In Stock → In Use = จุดเริ่มรอบ PM 90 วัน
+      currentModel: String,
+      changeModel: String,
     },
     registered: personSchema,
     fixtureBase: String,
     revision: { type: String, default: '' },
     pmDate: { type: String, default: '' },
+    pmForms: { type: [String], default: [] }, // เอกสาร 4M แนบตอน PM เกิน 7 วัน
   },
   { versionKey: false },
 )
@@ -204,8 +208,16 @@ const requestSchema = new mongoose.Schema(
     currentModel: String,
     changeModel: String,
     type: { type: String, index: true },
+    requestType: String, // Process Type (Mainline/Rotor/Winding/Function)
+    step: String,
+    dueDate: String,
     status: { type: String, default: 'Waiting', index: true },
     desc: { type: String, default: '' },
+    queueDate: String,
+    queueSlot: String,
+    replaceQty: Number,
+    items: { type: [String], default: [] },
+    action: String,
     breakdownItems: {
       type: [{ sn: String, symptom: String, _id: false }],
       default: [],
@@ -216,6 +228,10 @@ const requestSchema = new mongoose.Schema(
     verifyInfo: personSchema,
     issueDone: { type: Boolean, default: false },
     returnDone: { type: Boolean, default: false },
+    returnApprovals: {
+      type: [{ role: String, empId: String, name: String, lastname: String, date: Date }],
+      default: [],
+    },
     scannedIssue: { type: [String], default: [] },
     returnedItems: { type: [String], default: [] },
     scanMatches: {
@@ -258,6 +274,17 @@ const metaRowMatches = (a = {}, b = {}) =>
 const baseKey = (value) => text(value).replace(/\s+/g, '').toUpperCase()
 
 const ACTIVE_REQUEST_STATUSES = ['Waiting', 'Progress', 'Hold', 'Verify']
+const isModelSwap = (type) => /change\s*model|replace/i.test(String(type || ''))
+
+/* Change Model queue — 07:00–16:00, one 1-hour slot globally per day. */
+const CHANGE_MODEL_SLOTS = ['07:00', '08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00']
+const slotEnd = (slot) => {
+  const hour = Number(String(slot).split(':')[0]) + 1
+  return `${String(hour).padStart(2, '0')}:00`
+}
+const slotLabel = (slot) => `${slot}–${slotEnd(slot)}`
+const validDate = (value) =>
+  /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(`${value}T00:00:00Z`).getTime())
 
 const asyncRoute = (handler) => (req, res, next) =>
   Promise.resolve(handler(req, res, next)).catch(next)
@@ -268,6 +295,15 @@ const todayStamp = () => {
   const m = String(now.getMonth() + 1).padStart(2, '0')
   const d = String(now.getDate()).padStart(2, '0')
   return `${y}${m}${d}`
+}
+const todayInput = () => {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+}
+const addDaysInput = (date, days) => {
+  const base = validDate(date) ? new Date(`${date}T00:00:00`) : new Date()
+  base.setDate(base.getDate() + days)
+  return `${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, '0')}-${String(base.getDate()).padStart(2, '0')}`
 }
 
 const daysUntil = (value) => {
@@ -468,6 +504,25 @@ const pmStateOf = (fixture) => {
   if (ratio !== null && ratio >= 0.8) states.push('usage-remind')
   if (states.length === 0) states.push('tracked')
   return states
+}
+
+const pmOverdueDays = (fixture) => {
+  const days = daysUntil(fixture?.usage?.exp)
+  return days === null ? 0 : Math.max(0, -days)
+}
+const needs4MDocument = (fixture) =>
+  pmOverdueDays(fixture) > 7 && !(Array.isArray(fixture?.pmForms) ? fixture.pmForms : []).length
+const assertFixtureEditable = async (sn) => {
+  const fixture = await findFixture(text(sn))
+  if (fixture && needs4MDocument(fixture)) {
+    return {
+      status: 409,
+      message: `Fixture ${fixture.sn} เกินกำหนด PM ${pmOverdueDays(fixture)} วัน — กรุณาแนบเอกสาร 4M ก่อนแก้ไขข้อมูล`,
+      sn: fixture.sn,
+      line: fixture.line || '',
+    }
+  }
+  return null
 }
 
 const statusOfUser = (user) => String(user?.status || '')
@@ -768,6 +823,19 @@ app.post(
       }
     }
 
+    const blocked4M = []
+    for (const issue of issues) {
+      const guard = await assertFixtureEditable(issue.sn)
+      if (guard) blocked4M.push({ sn: issue.sn, message: guard.message })
+    }
+    if (blocked4M.length) {
+      return res.status(409).json({
+        success: false,
+        message: blocked4M[0].message,
+        blocked: blocked4M,
+      })
+    }
+
     if (issues.length && !confirm) {
       return res.status(409).json({
         success: false,
@@ -1066,6 +1134,66 @@ app.get(
   }),
 )
 
+/* Edit page — Due Date tab: bulk update usage.exp for selected SNs */
+app.post(
+  '/api/fixtures/due-date',
+  asyncRoute(async (req, res) => {
+    const body = req.body || {}
+    const sns = [...new Set((Array.isArray(body.sns) ? body.sns : []).map(text).filter(Boolean))]
+    const exp = text(body.exp)
+
+    if (!sns.length) {
+      return res.status(400).json({ success: false, message: 'กรุณาเลือก Fixture อย่างน้อย 1 ตัว' })
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(exp) || Number.isNaN(new Date(`${exp}T00:00:00Z`).getTime())) {
+      return res.status(400).json({ success: false, message: 'วันที่ Exp ไม่ถูกต้อง' })
+    }
+
+    const updated = []
+    const missing = []
+    const blocked = []
+    for (const sn of sns) {
+      const fixture = await findFixture(sn)
+      if (!fixture) {
+        missing.push(sn)
+        continue
+      }
+      const guard = await assertFixtureEditable(sn)
+      if (guard) {
+        blocked.push({ sn, message: guard.message })
+        continue
+      }
+      await updateFixtureBySn(sn, { 'usage.exp': exp })
+      await recordHistory(
+        { sn, action: 'Edit', detail: `อัปเดต Exp (PM Due) เป็น ${exp}`, line: fixture.line, model: fixture.model },
+        body.user,
+      )
+      updated.push(sn)
+    }
+
+    if (blocked.length) {
+      return res.status(409).json({
+        success: false,
+        message: blocked[0].message,
+        blocked,
+        updated,
+        missing,
+      })
+    }
+    if (!updated.length) {
+      return res.status(404).json({ success: false, message: 'ไม่พบ Fixture ที่เลือกในระบบ', missing })
+    }
+
+    return res.json({
+      success: true,
+      count: updated.length,
+      updated,
+      missing,
+      message: `อัปเดต Exp ${updated.length} Fixture เป็น ${exp} แล้ว`,
+    })
+  }),
+)
+
 app.get(
   '/api/fixtures/:sn',
   asyncRoute(async (req, res) => {
@@ -1159,6 +1287,8 @@ app.put(
     if (!fixture) {
       return res.status(404).json({ success: false, message: 'ไม่พบ Serial Number นี้ในระบบ' })
     }
+    const guard = await assertFixtureEditable(sn)
+    if (guard) return res.status(guard.status).json({ success: false, message: guard.message, ...guard })
 
     const set = {}
     for (const key of ['line', 'model', 'status', 'type', 'fixtureBase', 'revision', 'pmDate']) {
@@ -1186,6 +1316,12 @@ app.put(
       for (const key of ['current', 'max', 'exp', 'storage']) {
         if (body.usage[key] !== undefined) set[`usage.${key}`] = body.usage[key]
       }
+    }
+
+    if (set.status === 'In Use' && fixture.status !== 'In Use') {
+      const inUseAt = todayInput()
+      set['usage.inUseAt'] = inUseAt
+      set['usage.exp'] = addDaysInput(inUseAt, 90)
     }
 
     const infoSet = {}
@@ -1220,6 +1356,8 @@ app.delete(
     if (!fixture) {
       return res.status(404).json({ success: false, message: 'ไม่พบ Serial Number นี้ในระบบ' })
     }
+    const guard = await assertFixtureEditable(sn)
+    if (guard) return res.status(guard.status).json({ success: false, message: guard.message, ...guard })
     await FixtureDetail.deleteOne({ sn })
       await FixtureList.updateMany({ 'fixtureInfo.sn': sn }, { $pull: { 'fixtureInfo.$[].sn': sn } })
       await FixtureList.updateMany({}, { $pull: { fixtureInfo: { sn: { $size: 0 } } } })
@@ -1302,33 +1440,88 @@ const compareModels = async (line, from, to) => {
   }
 }
 
+/* Compare can be empty when the Fixture List has not been updated for the
+ * new model yet. Fall back to the registered fixtures of each model:
+ * issue the target model, return everything registered to the current model. */
+const modelFallbackPlan = async (line, from, to) => {
+  const [toRows, fromRows] = await Promise.all([
+    FixtureDetail.find({ line, model: to }, 'sn position process status').lean(),
+    FixtureDetail.find({ line, model: from }, 'sn position process status').lean(),
+  ])
+
+  const toPlan = (rows, action) => {
+    const seen = new Set()
+    return rows
+      .map((row) => ({
+        sn: text(row.sn),
+        position: text(row.position),
+        process: text(row.process),
+        status: text(row.status),
+        action,
+        fallback: true,
+      }))
+      .filter((row) => {
+        const key = scanKey(row.sn)
+        if (!key || seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+  }
+
+  const issue = toPlan(toRows, 'issue')
+  const issuedSn = new Set(issue.map((item) => scanKey(item.sn)))
+  const returnList = toPlan(fromRows, 'return').filter((item) => !issuedSn.has(scanKey(item.sn)))
+  return [...issue, ...returnList]
+}
+
 /* Plan of fixtures that must be issued / returned for a request. */
 const scanPlanForRequest = async (request) => {
-  if (/change\s*model/i.test(String(request?.type || ''))) {
+  if (isModelSwap(request?.type)) {
     const to = text(request.changeModel)
       || String(request.desc || '').split('→').slice(1).join('→').trim()
     const from = text(request.currentModel)
     const line = text(request.line)
     if (!line || !from || !to) return []
     const cmp = await compareModels(line, from, to)
+    if (!cmp.issue.length && !cmp.return.length && !cmp.keep.length) {
+      return modelFallbackPlan(line, from, to)
+    }
     return [
       ...cmp.issue.map((item) => ({ ...item, action: 'issue' })),
       ...cmp.return.map((item) => ({ ...item, action: 'return' })),
     ]
   }
   if (/breakdown/i.test(String(request?.type || ''))) {
-    // A broken fixture reported in the request must come back to stock.
+    // Issue: any registered spare with the same base is acceptable.
+    // Return: only the exact broken SNs named in the request are acceptable.
     const broken = (Array.isArray(request?.breakdownItems) ? request.breakdownItems : [])
       .map((item) => ({ sn: text(item?.sn), symptom: text(item?.symptom) }))
       .filter((item) => item.sn)
     const details = await Promise.all(broken.map((item) => findFixture(item.sn)))
-    return broken.map((item, index) => ({
+    const bases = new Set()
+    const issuePlan = []
+    broken.forEach((item, index) => {
+      const base = fixtureBase(details[index]?.fixtureBase || item.sn)
+      if (!base || bases.has(base)) return
+      bases.add(base)
+      issuePlan.push({
+        sn: item.sn,
+        base,
+        position: details[index]?.position || item.symptom || '',
+        process: details[index]?.process || '',
+        action: 'issue',
+        allowSameBase: true,
+      })
+    })
+    const returnPlan = broken.map((item, index) => ({
       sn: item.sn,
       position: details[index]?.position || item.symptom || '',
       process: details[index]?.process || '',
       symptom: item.symptom,
       action: 'return',
+      strictSn: true,
     }))
+    return [...issuePlan, ...returnPlan]
   }
   return []
 }
@@ -1362,6 +1555,40 @@ app.get(
   }),
 )
 
+/* Change Model queue availability for one day — shared across every Line. */
+app.get(
+  '/api/requests/change-model-slots',
+  asyncRoute(async (req, res) => {
+    const date = text(req.query.date) || todayInput()
+    if (!validDate(date)) {
+      return res.status(400).json({ success: false, message: 'วันที่ไม่ถูกต้อง' })
+    }
+    const taken = await Request.find({
+      type: 'Change Model',
+      queueDate: date,
+      queueSlot: { $in: CHANGE_MODEL_SLOTS },
+    })
+      .select('request_id queueSlot line currentModel changeModel')
+      .lean()
+    const bySlot = new Map(taken.map((row) => [row.queueSlot, row]))
+
+    return res.json(
+      CHANGE_MODEL_SLOTS.map((slot) => {
+        const row = bySlot.get(slot)
+        return {
+          value: slot,
+          label: slotLabel(slot),
+          available: !row,
+          requestId: row?.request_id || null,
+          line: row?.line || null,
+          currentModel: row?.currentModel || null,
+          changeModel: row?.changeModel || null,
+        }
+      }),
+    )
+  }),
+)
+
 app.get(
   '/api/requests/:requestId',
   asyncRoute(async (req, res) => {
@@ -1379,14 +1606,39 @@ app.post(
     const line = text(body.line)
     const currentModel = text(body.currentModel || body.model)
     const changeModel = text(body.changeModel || body.modelTo)
+    const queueDate = text(body.queueDate) || todayInput()
+    const queueSlot = text(body.queueSlot)
 
     if (!type || !line) {
       return res.status(400).json({ success: false, message: 'กรุณาระบุประเภทคำขอและ Line' })
     }
 
+    /* A Change Model request reserves one global 1-hour prep slot for the day. */
+    if (type === 'Change Model') {
+      if (!validDate(queueDate) || !CHANGE_MODEL_SLOTS.includes(queueSlot)) {
+        return res.status(400).json({ success: false, message: 'กรุณาเลือกวันที่และคิว Change Model (07:00–16:00)' })
+      }
+      const taken = await Request.findOne({
+        type: 'Change Model',
+        queueDate,
+        queueSlot,
+      }).lean()
+      if (taken) {
+        return res.status(409).json({
+          success: false,
+          message: `คิว ${slotLabel(queueSlot)} วันที่ ${queueDate} ถูกคำขอ ${taken.request_id} ใช้งานอยู่ กรุณาเลือกคิวอื่น`,
+          conflict: { requestId: taken.request_id, queueDate, queueSlot },
+        })
+      }
+    }
+
     const breakdownItems = Array.isArray(body.breakdownItems)
       ? body.breakdownItems.map((it) => ({ sn: text(it?.sn) || '', symptom: text(it?.symptom) || '' })).filter((it) => it.sn || it.symptom)
       : []
+    const replaceQty = Number(body.replaceQty)
+    if (type === 'Replace' && (!Number.isInteger(replaceQty) || replaceQty < 1)) {
+      return res.status(400).json({ success: false, message: 'กรุณาระบุจำนวน Fixture ที่ต้องเปลี่ยน (อย่างน้อย 1)' })
+    }
 
     /* Block duplicate requests. Rejected/Done are history and may be requested
      * again; Waiting/Progress/Hold/Verify are still active in the system. */
@@ -1408,10 +1660,10 @@ app.post(
           })
         }
       }
-    } else if (type === 'Change Model' && currentModel && changeModel) {
+    } else if (isModelSwap(type) && currentModel && changeModel) {
       const duplicate = await Request.findOne({
         ...duplicateFilter,
-        type: 'Change Model',
+        type: { $in: ['Change Model', 'Replace'] },
         line,
         currentModel,
         changeModel,
@@ -1419,7 +1671,7 @@ app.post(
       if (duplicate) {
         return res.status(409).json({
           success: false,
-          message: `มีคำขอ ${duplicate.request_id} ที่ยังดำเนินการอยู่สำหรับ Change Model ${line} · ${currentModel} → ${changeModel}`,
+          message: `มีคำขอ ${duplicate.request_id} ที่ยังดำเนินการอยู่สำหรับ ${type} ${line} · ${currentModel} → ${changeModel}`,
           duplicate,
         })
       }
@@ -1431,13 +1683,19 @@ app.post(
     })
     const request_id = `REQ${stamp}${String(todayCount + 1).padStart(3, '0')}`
 
-    const desc = text(body.desc) || (type === 'Change Model' && changeModel ? `${currentModel} → ${changeModel}` : '')
+    const desc = text(body.desc) || (isModelSwap(type) && changeModel ? `${currentModel} → ${changeModel}` : '')
 
     const request = await Request.create({
       request_id,
       line,
       currentModel: currentModel || '',
       changeModel: changeModel || '',
+      queueDate: type === 'Change Model' ? queueDate : undefined,
+      queueSlot: type === 'Change Model' ? queueSlot : undefined,
+      replaceQty: type === 'Replace' ? replaceQty : undefined,
+      requestType: text(body.requestType),
+      step: text(body.step),
+      dueDate: text(body.dueDate),
       type,
       status: 'Waiting',
       desc,
@@ -1476,12 +1734,12 @@ app.put(
       return res.status(409).json({ success: false, message: 'คำขอนี้ได้รับการยืนยันแล้ว' })
     }
 
-    // only Progress / Verify count as an active job; Hold stays assigned and can be paused alongside another job
+    // Only Progress blocks a new Accept — Verify and Hold can run alongside another job
     const empId = req.body?.user?.userId || req.body?.user?.empId
     if (empId) {
       const active = await Request.findOne({
         'acceptInfo.empId': empId,
-        status: { $in: ['Progress', 'Verify'] },
+        status: { $in: ['Progress'] },
         request_id: { $ne: request.request_id },
       })
       if (active) {
@@ -1565,13 +1823,20 @@ const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$
 // Fixture base = SN without the revision suffix (-01, -02, ...)
 const fixtureBase = (value) => scanKey(value).replace(/-\d+$/, '')
 
-const scanRequestGuard = (request, user) => {
+const scanRequestGuard = (request, user, phase = 'issue') => {
   if (!request) return { status: 404, message: 'ไม่พบคำขอนี้' }
-  if (request.status !== 'Progress' && request.status !== 'Hold') {
+  const actor = String(user?.userId || user?.empId || '').toLowerCase()
+
+  // Every barcode scan in Order (issue and return) belongs to the assigned technician.
+  if (phase === 'return') {
+    if (request.status !== 'Verify') {
+      return { status: 409, message: 'คำขอนี้ไม่สามารถสแกนคืนได้' }
+    }
+  } else if (request.status !== 'Progress' && request.status !== 'Hold') {
     return { status: 409, message: 'คำขอนี้ไม่สามารถสแกนได้อีก' }
   }
-  const actor = String(user?.userId || user?.empId || '').toLowerCase()
-  const assignee = String(request.acceptInfo?.empId || '').toLowerCase()
+
+  const assignee = String(request.acceptInfo?.empId || request.issueInfo?.empId || '').toLowerCase()
   if (!assignee || actor !== assignee) {
     return { status: 403, message: 'เฉพาะช่างที่รับงานนี้เท่านั้นที่สแกนได้' }
   }
@@ -1598,16 +1863,19 @@ app.post(
   '/api/requests/:requestId/reset-scan',
   asyncRoute(async (req, res) => {
     const request = await Request.findOne({ request_id: text(req.params.requestId) })
-    const blocked = scanRequestGuard(request, req.body?.user)
+    const phase = text(req.body?.phase) === 'return' ? 'return' : 'issue'
+    const blocked = scanRequestGuard(request, req.body?.user, phase)
     if (blocked) return res.status(blocked.status).json({ success: false, message: blocked.message })
 
-    request.scanMatches = []
+    // Reset only the active phase so issue history is not silently destroyed.
+    request.scanMatches = (request.scanMatches || [])
+      .filter((match) => match.action !== (phase === 'return' ? 'return' : 'issue'))
     await request.save()
 
     return res.json({
       success: true,
       request,
-      message: 'รีเซ็ตรายการสแกนแล้ว',
+      message: phase === 'return' ? 'รีเซ็ตรายการสแกนคืนแล้ว' : 'รีเซ็ตรายการสแกนแล้ว',
     })
   }),
 )
@@ -1618,7 +1886,9 @@ app.post(
   '/api/requests/:requestId/scan',
   asyncRoute(async (req, res) => {
     const request = await Request.findOne({ request_id: text(req.params.requestId) })
-    const blocked = scanRequestGuard(request, req.body?.user)
+    const phase = text(req.body?.phase) || 'all'
+    const guardPhase = phase === 'return' ? 'return' : 'issue'
+    const blocked = scanRequestGuard(request, req.body?.user, guardPhase)
     if (blocked) return res.status(blocked.status).json({ success: false, message: blocked.message })
 
     const raw = text(req.body?.sn)
@@ -1651,33 +1921,55 @@ app.post(
     let match
     if (plan.length > 0) {
       const base = fixtureBase(scanValue)
+      const planMatches = (item) => (item.strictSn
+        ? scanKey(item.sn) === scanKey(resolvedSn)
+        : fixtureBase(item.sn) === base)
       const usedIndexes = new Set((request.scanMatches || [])
         .map((item) => item.planIndex)
         .filter((value) => Number.isInteger(value)))
-      const candidates = plan
-        .map((item, index) => ({ ...item, planIndex: index }))
-        .filter((item) => fixtureBase(item.sn) === base && !usedIndexes.has(item.planIndex))
-      if (plan.some((item) => fixtureBase(item.sn) === base) && candidates.length === 0) {
+      const scopedPlan = phase === 'return'
+        ? plan.filter((item) => item.action === 'return')
+        : phase === 'issue'
+          ? plan.filter((item) => item.action === 'issue')
+          : plan
+      const candidates = scopedPlan
+        .map((item) => ({ ...item, planIndex: plan.indexOf(item) }))
+        .filter((item) => planMatches(item) && !usedIndexes.has(item.planIndex))
+      if (scopedPlan.some(planMatches) && candidates.length === 0) {
+        const strict = scopedPlan.some((item) => item.strictSn)
         return res.status(409).json({
           success: false,
-          message: `base ${base} สแกนครบตามจำนวนที่ระบบคำนวณแล้ว`,
+          message: strict
+            ? `${resolvedSn} สแกนคืนครบตามรายการที่ระบุในคำขอแล้ว`
+            : phase === 'return'
+              ? `base ${base} สแกนคืนครบตามจำนวนที่ระบบคำนวณแล้ว`
+              : phase === 'issue'
+                ? `base ${base} สแกนจ่ายครบตามจำนวนที่ระบบคำนวณแล้ว`
+                : `base ${base} สแกนครบตามจำนวนที่ระบบคำนวณแล้ว`,
         })
       }
       if (candidates.length === 0) {
+        const strict = scopedPlan.some((item) => item.strictSn)
         return res.status(409).json({
           success: false,
-          message: `${resolvedSn} ไม่ตรงกับรายการที่ต้องเบิก / คืนของคำขอนี้ (base ${base})`,
+          message: strict
+            ? `${resolvedSn} ไม่ตรงกับ Serial Number ที่ต้องคืนของคำขอนี้`
+            : phase === 'return'
+              ? `${resolvedSn} ไม่ตรงกับรายการที่ต้องคืนของคำขอนี้ (base ${base})`
+              : `${resolvedSn} ไม่ตรงกับรายการที่ต้องจ่ายของคำขอนี้ (base ${base})`,
         })
       }
-      const wantsIssue = fixture.status === 'In Stock'
-      match = candidates.find((item) => item.action === (wantsIssue ? 'issue' : 'return'))
-        || candidates[0]
+      match = candidates[0]
     } else {
       match = {
         sn: resolvedSn,
         position: '',
         process: '',
-        action: fixture.status === 'In Stock' ? 'issue' : 'return',
+        action: phase === 'return'
+          ? 'return'
+          : phase === 'issue'
+            ? 'issue'
+            : (fixture.status === 'In Stock' ? 'issue' : 'return'),
       }
     }
 
@@ -1691,13 +1983,8 @@ app.post(
         fixture,
       })
     }
-    if (match.action === 'return' && fixture.status === 'In Stock') {
-      return res.status(409).json({
-        success: false,
-        message: `${resolvedSn} อยู่ใน Stock อยู่แล้ว (ไม่ใช่ Fixture ที่ต้องคืน)`,
-        fixture,
-      })
-    }
+    // A return-plan fixture already in Stock is treated as confirmed returned;
+    // Verify skips the update for it instead of blocking the whole request.
 
     const matchRecord = {
       sn: scanKey(resolvedSn),
@@ -1725,23 +2012,25 @@ app.post(
   '/api/requests/:requestId/confirm-scan',
   asyncRoute(async (req, res) => {
     const request = await Request.findOne({ request_id: text(req.params.requestId) })
-    const blocked = scanRequestGuard(request, req.body?.user)
+    const blocked = scanRequestGuard(request, req.body?.user, 'issue')
     if (blocked) return res.status(blocked.status).json({ success: false, message: blocked.message })
 
     const matches = request.scanMatches || []
-    if (matches.length === 0) {
-      return res.status(400).json({ success: false, message: 'ยังไม่มี Fixture ที่สแกนตรงกัน' })
-    }
-
+    const issueMatches = matches.filter((match) => match.action === 'issue')
     const plan = await scanPlanForRequest(request)
-    if (plan.length > 0) {
+    /* Progress phase handles issuing only — returns are shown/applied in Verify. */
+    const issuePlan = plan
+      .map((item, index) => ({ item, index }))
+      .filter(({ item }) => item.action === 'issue')
+
+    if (issuePlan.length) {
       const usedIndexes = new Set(matches
         .map((match) => match.planIndex)
         .filter((value) => Number.isInteger(value)))
-      const remaining = matches
+      const remaining = issueMatches
         .filter((match) => !Number.isInteger(match.planIndex))
         .map((match) => scanKey(match.planSn || match.sn))
-      const missing = plan.filter((item, index) => {
+      const missing = issuePlan.filter(({ item, index }) => {
         if (usedIndexes.has(index)) return false
         const key = scanKey(item.sn)
         const exact = remaining.indexOf(key)
@@ -1756,71 +2045,57 @@ app.post(
         }
         return true
       })
-      if (missing.length > 0) {
-        const sample = missing.slice(0, 3).map((item) => item.sn).join(', ')
+      if (missing.length) {
+        const sample = missing.slice(0, 3).map(({ item }) => item.sn).join(', ')
         return res.status(409).json({
           success: false,
-          message: `สแกนไม่ครบ — ยังขาด ${missing.length} ตัว (${sample}${missing.length > 3 ? ' …' : ''})`,
+          message: `สแกนจ่ายไม่ครบ — ยังขาด ${missing.length} ตัว (${sample}${missing.length > 3 ? ' …' : ''})`,
         })
       }
-    } else if (!matches.some((match) => match.action === 'issue')
-      || !matches.some((match) => match.action === 'return')) {
+    } else if (plan.length === 0 && !issueMatches.length) {
       return res.status(409).json({
         success: false,
-        message: 'ต้องสแกนทั้งรายการจ่ายและรับคืนก่อนกดตกลง',
+        message: 'ต้องสแกนรายการจ่ายก่อนกดตกลง',
       })
     }
 
     const items = []
-    for (const match of matches) {
+    for (const match of issueMatches) {
       const fixture = await findFixture(match.sn)
       if (!fixture) {
         return res.status(404).json({ success: false, message: `ไม่พบ ${match.sn} ในระบบ` })
       }
-      if (match.action === 'issue' && fixture.status !== 'In Stock') {
+      const guard = await assertFixtureEditable(fixture.sn)
+      if (guard) return res.status(guard.status).json({ success: false, message: guard.message, ...guard })
+      if (fixture.status !== 'In Stock') {
         return res.status(409).json({
           success: false,
           message: `${fixture.sn} อยู่ในสถานะ ${fixture.status} (ต้องเป็น In Stock ก่อนจ่าย)`,
         })
       }
-      if (match.action === 'return' && fixture.status === 'In Stock') {
-        return res.status(409).json({
-          success: false,
-          message: `${fixture.sn} อยู่ใน Stock อยู่แล้ว`,
-        })
-      }
       items.push({ match, fixture })
     }
 
-    for (const { match, fixture } of items) {
-      if (match.action === 'issue') {
-        const modelForUse = request.type === 'Change Model'
-          ? (request.changeModel || request.currentModel || '')
-          : (request.currentModel || '')
-        await updateFixtureBySn(fixture.sn, {
-          status: 'In Use',
-          'usage.current': (Number(fixture.usage?.current) || 0) + 1,
-          'usage.usedLine': request.line || '',
-          'usage.currentModel': modelForUse,
-          'usage.changeModel': request.type === 'Change Model' ? (request.changeModel || '') : '',
-        })
-      } else {
-        await updateFixtureBySn(fixture.sn, {
-          status: 'In Stock',
-          'usage.current': 0,
-          'usage.currentModel': '',
-          'usage.changeModel': '',
-          'usage.usedLine': '',
-        })
-      }
+    const inUseAt = todayInput()
+    for (const { fixture } of items) {
+      const modelForUse = isModelSwap(request.type)
+        ? (request.changeModel || request.currentModel || '')
+        : (request.currentModel || '')
+      await updateFixtureBySn(fixture.sn, {
+        status: 'In Use',
+        'usage.current': (Number(fixture.usage?.current) || 0) + 1,
+        'usage.usedLine': request.line || '',
+        'usage.inUseAt': inUseAt,
+        'usage.exp': addDaysInput(inUseAt, 90),
+        'usage.currentModel': modelForUse,
+        'usage.changeModel': isModelSwap(request.type) ? (request.changeModel || '') : '',
+      })
       await recordHistory(
         {
           sn: fixture.sn,
           request_id: request.request_id,
-          action: match.action === 'issue' ? 'Issue (Scan)' : 'Return (Scan)',
-          detail: match.action === 'issue'
-            ? `สแกนจ่าย ${fixture.sn} → ใช้ที่ ${request.line || '-'}`
-            : `สแกนรับคืน ${fixture.sn} → In Stock`,
+          action: 'Issue (Scan)',
+          detail: `สแกนจ่าย ${fixture.sn} → ใช้ที่ ${request.line || '-'}`,
           line: request.line,
           model: request.currentModel,
         },
@@ -1828,10 +2103,11 @@ app.post(
       )
     }
 
-    request.scannedIssue = items.filter((item) => item.match.action === 'issue').map((item) => item.fixture.sn)
-    request.returnedItems = items.filter((item) => item.match.action === 'return').map((item) => item.fixture.sn)
+    request.scannedIssue = items.map((item) => item.fixture.sn)
+    request.scanMatches = issueMatches
+    request.returnedItems = []
     request.issueDone = true
-    request.returnDone = true
+    request.returnDone = false
     request.issueInfo = personFrom(req.body?.user || {})
     request.status = 'Verify'
     await request.save()
@@ -1839,7 +2115,7 @@ app.post(
     return res.json({
       success: true,
       request,
-      message: `อัปเดต ${items.length} ตัวสำเร็จ — ${request.request_id} พร้อมให้เจ้าของคำขอ Verify`,
+      message: `จ่าย ${items.length} ตัวสำเร็จ — ${request.request_id} พร้อม Verify และรับคืน`,
     })
   }),
 )
@@ -1868,6 +2144,8 @@ app.put(
       if (!fixture) {
         return res.status(404).json({ success: false, message: `ไม่พบ ${sn} ในระบบ` })
       }
+      const guard = await assertFixtureEditable(sn)
+      if (guard) return res.status(guard.status).json({ success: false, message: guard.message, ...guard })
       await updateFixtureBySn(sn, { status: 'Maintenance' })
       await recordHistory(
         {
@@ -1889,15 +2167,21 @@ app.put(
       if (!fixture) {
         return res.status(404).json({ success: false, message: `ไม่พบ ${sn} ในระบบ` })
       }
+      const guard = await assertFixtureEditable(sn)
+      if (guard) return res.status(guard.status).json({ success: false, message: guard.message, ...guard })
       if (fixture.status !== 'In Stock') {
         return res.status(409).json({
           success: false,
           message: `${sn} ไม่ได้อยู่ในสถานะ In Stock (ปัจจุบัน: ${fixture.status})`,
         })
       }
+      const inUseAt = todayInput()
       await updateFixtureBySn(sn, {
         status: 'In Use',
         'usage.current': (Number(fixture.usage?.current) || 0) + 1,
+        'usage.usedLine': request.line || '',
+        'usage.inUseAt': inUseAt,
+        'usage.exp': addDaysInput(inUseAt, 90),
       })
       await recordHistory(
         {
@@ -1937,15 +2221,133 @@ app.put(
     }
 
     const actor = String(req.body?.user?.userId || req.body?.user?.empId || '').toLowerCase()
-    const owner = String(request.requestInfo?.empId || '').toLowerCase()
-    if (owner && actor !== owner) {
-      return res.status(403).json({ success: false, message: 'มีเพียงผู้ขอ (Requestor) เท่านั้นที่ Verify ได้' })
+    const requester = String(request.requestInfo?.empId || '').toLowerCase()
+    const assignee = String(request.acceptInfo?.empId || request.issueInfo?.empId || '').toLowerCase()
+    const roles = []
+    if (actor && actor === requester) roles.push('requester')
+    if (actor && actor === assignee && !roles.includes('assignee')) roles.push('assignee')
+    if (!roles.length) {
+      return res.status(403).json({
+        success: false,
+        message: 'เฉพาะผู้ขอหรือช่างที่รับงานเท่านั้นที่ยืนยันการคืนได้',
+      })
+    }
+
+    const plan = await scanPlanForRequest(request)
+    const returnPlan = plan
+      .map((item, index) => ({ item, index }))
+      .filter(({ item }) => item.action === 'return')
+    const returnMatches = (request.scanMatches || []).filter((match) => match.action === 'return')
+    const returnItems = []
+    const missing = []
+
+    if (returnPlan.length) {
+      const usedIndexes = new Set(returnMatches
+        .map((match) => match.planIndex)
+        .filter((value) => Number.isInteger(value)))
+      const remaining = returnMatches
+        .filter((match) => !Number.isInteger(match.planIndex))
+        .map((match) => scanKey(match.planSn || match.sn))
+
+      for (const entry of returnPlan) {
+        if (usedIndexes.has(entry.index)) {
+          returnItems.push(entry.item)
+          continue
+        }
+        const key = scanKey(entry.item.sn)
+        const exact = remaining.indexOf(key)
+        if (exact >= 0) {
+          remaining.splice(exact, 1)
+          returnItems.push(entry.item)
+          continue
+        }
+        // Breakdown returns are pinned to the exact SN in breakdownItems.
+        const byBase = entry.item.strictSn
+          ? -1
+          : remaining.findIndex((value) => fixtureBase(value) === fixtureBase(entry.item.sn))
+        if (byBase >= 0) {
+          remaining.splice(byBase, 1)
+          returnItems.push(entry.item)
+          continue
+        }
+        missing.push(entry.item)
+      }
+    } else {
+      returnItems.push(...returnMatches.map((match) => ({
+        sn: match.sn,
+        position: match.position || '',
+        process: match.process || '',
+      })))
+    }
+
+    if (missing.length) {
+      const sample = missing.slice(0, 3).map((item) => item.sn).join(', ')
+      return res.status(409).json({
+        success: false,
+        message: `สแกนคืนไม่ครบ — ยังขาด ${missing.length} ตัว (${sample}${missing.length > 3 ? ' …' : ''})`,
+      })
+    }
+
+    // Two-person sign-off: requester + assignee. No password in the Verify modal.
+    const approvals = Array.isArray(request.returnApprovals) ? [...request.returnApprovals] : []
+    for (const role of roles) {
+      const approval = { role, ...personFrom(req.body?.user || {}) }
+      const index = approvals.findIndex((item) => item.role === role)
+      if (index >= 0) approvals[index] = approval
+      else approvals.push(approval)
+    }
+    request.returnApprovals = approvals
+
+    const approved = new Set(approvals.map((item) => item.role))
+    if (!approved.has('requester') || !approved.has('assignee')) {
+      request.verifyInfo = personFrom(req.body?.user || {})
+      await request.save()
+      const waiting = approved.has('requester') ? 'assignee' : 'requester'
+      return res.json({
+        success: true,
+        request,
+        pending: waiting,
+        message: waiting === 'assignee'
+          ? 'บันทึกการยืนยันจากผู้ขอแล้ว — รอช่างที่รับงานสแกนและยืนยัน'
+          : 'บันทึกการยืนยันจากช่างแล้ว — รอผู้ขอยืนยัน',
+      })
+    }
+
+    if (!request.returnDone) {
+      const returned = []
+      for (const item of returnItems) {
+        const sn = text(item.sn)
+        if (!sn) continue
+        const fixture = await findFixture(sn)
+        if (!fixture || fixture.status === 'In Stock') continue
+        const guard = await assertFixtureEditable(sn)
+        if (guard) return res.status(guard.status).json({ success: false, message: guard.message, ...guard })
+        await updateFixtureBySn(sn, {
+          status: 'In Stock',
+          'usage.current': 0,
+          'usage.usedLine': '',
+          'usage.inUseAt': '',
+          'usage.currentModel': '',
+          'usage.changeModel': '',
+        })
+        await recordHistory(
+          {
+            sn,
+            request_id: request.request_id,
+            action: 'Return (Verify)',
+            detail: `รับคืน ${sn} → In Stock ตอน Verify ${request.request_id}`,
+            line: request.line,
+            model: request.currentModel,
+          },
+          req.body?.user,
+        )
+        returned.push(sn)
+      }
+      request.returnedItems = returned
+      request.returnDone = true
     }
 
     for (const sn of request.items || []) {
-      if (request.type === 'Change Model' && request.changeModel) {
-        // model change is tracked on the request; no fixtureDetail field to update
-      }
       await recordHistory(
         {
           sn,
@@ -1963,7 +2365,7 @@ app.put(
     request.status = 'Done'
     await request.save()
 
-    return res.json({ success: true, request })
+    return res.json({ success: true, request, message: `Verify สำเร็จ — ${request.request_id} ปิดงานแล้ว` })
   }),
 )
 
@@ -1976,118 +2378,7 @@ app.delete(
   }),
 )
 
-/* ------------------------------------------------------------------ */
-/* Manual Issue / Return (backup flow, no Order/Request required)      */
-/* ------------------------------------------------------------------ */
-
-/* Issue from stock without an order */
-app.post(
-  '/api/issue',
-  asyncRoute(async (req, res) => {
-    const sn = text(req.body?.sn)
-    const line = text(req.body?.line)
-    const model = text(req.body?.model)
-    const note = text(req.body?.note)
-
-    if (!sn) return res.status(400).json({ success: false, message: 'กรุณาระบุ Serial Number' })
-
-    const fixture = await findFixture(sn)
-    if (!fixture) {
-      return res.status(404).json({ success: false, message: 'ไม่พบ Serial Number นี้ในระบบ' })
-    }
-    if (fixture.status !== 'In Stock') {
-      return res.status(409).json({
-        success: false,
-        message: `Fixture นี้ไม่ได้อยู่ใน Stock (${fixture.status})`,
-        fixture,
-      })
-    }
-
-    const location = line || text(fixture.line) || '-'
-    const usedModel = model || text(fixture.model) || '-'
-    await updateFixtureBySn(fixture.sn, {
-      status: 'In Use',
-      'usage.current': (Number(fixture.usage?.current) || 0) + 1,
-      'usage.usedLine': location,
-      'usage.currentModel': usedModel,
-      'usage.changeModel': '',
-    })
-
-    await recordHistory(
-      {
-        sn: fixture.sn,
-        request_id: text(req.body?.request_id) || '',
-        action: 'Issue',
-        detail: `จ่าย Fixture แบบไม่ผ่าน Order — ${location} · ${usedModel}${note ? ` · ${note}` : ''}`,
-        line: location,
-        model: usedModel,
-      },
-      req.body?.user,
-    )
-
-    return res.json({
-      success: true,
-      message: `จ่าย ${fixture.sn} ให้ ${location} · ${usedModel} สำเร็จ`,
-      fixture: { ...fixture, status: 'In Use' },
-    })
-  }),
-)
-
-app.get(
-  '/api/return',
-  asyncRoute(async (_req, res) => {
-    const fixtures = await flattenFixtures({ status: 'In Use,Maintenance' })
-    res.json(fixtures)
-  }),
-)
-
-app.post(
-  '/api/return',
-  asyncRoute(async (req, res) => {
-    const sn = text(req.body?.sn)
-    const target = req.body?.target === 'Maintenance' ? 'Maintenance' : 'In Stock'
-
-    if (!sn) return res.status(400).json({ success: false, message: 'กรุณาระบุ Serial Number' })
-
-    const fixture = await findFixture(sn)
-    if (!fixture) {
-      return res.status(404).json({ success: false, message: 'ไม่พบ Serial Number นี้ในระบบ' })
-    }
-    if (fixture.status === 'In Stock') {
-      return res.status(409).json({
-        success: false,
-        message: 'Fixture นี้อยู่ใน Stock อยู่แล้ว',
-        fixture,
-      })
-    }
-
-    await updateFixtureBySn(fixture.sn, {
-      status: target,
-      'usage.current': 0,
-      'usage.usedLine': '',
-      'usage.currentModel': '',
-      'usage.changeModel': '',
-    })
-
-    await recordHistory(
-      {
-        sn: fixture.sn,
-        request_id: text(req.body?.request_id) || '',
-        action: 'Return',
-        detail: `คืน Fixture แบบไม่ผ่าน Order — Fixture confirm returned → ${target}`,
-        line: fixture.line,
-        model: fixture.model,
-      },
-      req.body?.user,
-    )
-
-    return res.json({
-      success: true,
-      message: `คืน ${fixture.sn} เข้า ${target} สำเร็จ`,
-      fixture: { ...fixture, status: target },
-    })
-  }),
-)
+/* Manual Issue / Return was removed — all issuing/returning now flows through Order. */
 
 /* ------------------------------------------------------------------ */
 /* PM Checklist Phase 2                                                */
@@ -2100,6 +2391,8 @@ app.get(
     const data = fixtures.map((fixture) => ({
       ...fixture,
       pmStates: pmStateOf(fixture),
+      pmOverdueDays: pmOverdueDays(fixture),
+      needs4M: needs4MDocument(fixture),
       usagePercent:
         Number(fixture.usage?.max) > 0
           ? Math.round(((Number(fixture.usage?.current) || 0) / Number(fixture.usage?.max)) * 100)
@@ -2116,8 +2409,15 @@ app.post(
     const sn = text(req.body?.sn)
     const fixture = await findFixture(sn)
     if (!fixture) return res.status(404).json({ success: false, message: 'ไม่พบ Serial Number นี้' })
-    if (fixture.status === 'Maintenance') {
-      return res.status(409).json({ success: false, message: 'Fixture นี้อยู่ใน Maintenance แล้ว' })
+    const guard = await assertFixtureEditable(sn)
+    if (guard) return res.status(guard.status).json({ success: false, message: guard.message, ...guard })
+    if (fixture.status !== 'In Use') {
+      return res.status(409).json({
+        success: false,
+        message: fixture.status === 'Maintenance'
+          ? 'Fixture นี้อยู่ใน Maintenance แล้ว'
+          : 'PM ได้เฉพาะ Fixture ที่ใช้งานอยู่ (In Use) เท่านั้น',
+      })
     }
     const pmDate = text(req.body?.date) || new Date().toISOString().slice(0, 10)
     const note = text(req.body?.note) || ''
@@ -2147,6 +2447,8 @@ app.post(
     }
     const fixture = await findFixture(sn)
     if (!fixture) return res.status(404).json({ success: false, message: 'ไม่พบ Serial Number นี้' })
+    const guard = await assertFixtureEditable(sn)
+    if (guard) return res.status(guard.status).json({ success: false, message: guard.message, ...guard })
 
     const formUrl = text(req.body?.formUrl) || ''
     const hasForm = Boolean(formUrl) || (Array.isArray(fixture.pmForms) && fixture.pmForms.length > 0)
@@ -2209,6 +2511,56 @@ app.post(
   }),
 )
 
+/* Attach one 4M document to every overdue fixture in a line + model group. */
+app.post(
+  '/api/pm/forms/group',
+  upload.single('file'),
+  asyncRoute(async (req, res) => {
+    const line = text(req.body?.line)
+    const model = text(req.body?.model)
+    if (!line || !model) {
+      return res.status(400).json({ success: false, message: 'กรุณาระบุ Line และ Model ก่อนแนบเอกสาร 4M' })
+    }
+    if (!req.file) return res.status(400).json({ success: false, message: 'กรุณาเลือกไฟล์เอกสาร 4M' })
+
+    const fixtures = await flattenFixtureDetails({ line, model, status: 'In Use,Maintenance' })
+    const overdue = fixtures.filter((fixture) => pmOverdueDays(fixture) > 7)
+    if (!overdue.length) {
+      return res.status(400).json({
+        success: false,
+        message: `ไม่มี Fixture ใน Line ${line} / Model ${model} ที่เกินกำหนด PM มากกว่า 7 วัน`,
+      })
+    }
+
+    const url = `/uploads/pm/${req.file.filename}`
+    for (const fixture of overdue) {
+      await updateFixtureBySn(fixture.sn, {
+        pmForms: [...(Array.isArray(fixture.pmForms) ? fixture.pmForms : []), url],
+      })
+      await recordHistory(
+        {
+          sn: fixture.sn,
+          request_id: '',
+          action: '4M Document',
+          detail: `แนบเอกสาร 4M ประจำ Line ${line} / Model ${model}: ${req.file.originalname}`,
+          line,
+          model,
+        },
+        req.body?.user,
+      )
+    }
+    return res.json({
+      success: true,
+      url,
+      line,
+      model,
+      count: overdue.length,
+      sns: overdue.map((fixture) => fixture.sn),
+      originalName: req.file.originalname,
+    })
+  }),
+)
+
 /* Over 7 Day -> 4M +XX Days Management Assign (QA, ME, TE, PD) */
 app.post(
   '/api/pm/assign',
@@ -2222,6 +2574,8 @@ app.post(
     if (!sn) return res.status(400).json({ success: false, message: 'กรุณาระบุ SN' })
     const fixture = await findFixture(sn)
     if (!fixture) return res.status(404).json({ success: false, message: 'ไม่พบ Serial Number นี้' })
+    const guard = await assertFixtureEditable(sn)
+    if (guard) return res.status(guard.status).json({ success: false, message: guard.message, ...guard })
 
     const set = { status: 'Maintenance' }
     if (days > 0) {
@@ -2269,6 +2623,8 @@ app.post(
 
     const fixture = await findFixture(sn)
     if (!fixture) return res.status(404).json({ success: false, message: 'ไม่พบ Serial Number นี้' })
+    const guard = await assertFixtureEditable(sn)
+    if (guard) return res.status(guard.status).json({ success: false, message: guard.message, ...guard })
     if (fixture.status !== 'Maintenance') {
       return res.status(409).json({
         success: false,
@@ -2281,6 +2637,7 @@ app.post(
       await updateFixtureBySn(sn, {
         status: 'In Use',
         pmDate: '',
+        'usage.inUseAt': todayInput(),
         'usage.exp': newExp,
         'usage.current': 0,
       })
@@ -2463,12 +2820,58 @@ app.post(
 app.get(
   '/api/dashboard',
   asyncRoute(async (_req, res) => {
-    const fixtures = await flattenFixtures()
+    const fixtures = await flattenFixtureDetails()
     const counts = {}
+    const lineMap = new Map()
+    const storageMap = new Map()
+
+    const storageDocs = await Storage.find({}, 'location desc').lean()
+    for (const doc of storageDocs) {
+      storageMap.set(doc.location, {
+        location: doc.location,
+        desc: doc.desc || '',
+        total: 0,
+        inUse: 0,
+        maintenance: 0,
+      })
+    }
+
     for (const fixture of fixtures) {
       const key = fixture.status || 'Unknown'
       counts[key] = (counts[key] || 0) + 1
+
+      const lineKey = fixture.line || 'N/A'
+      const lineRow = lineMap.get(lineKey) || {
+        line: lineKey,
+        total: 0,
+        inUse: 0,
+        maintenance: 0,
+        order: 0,
+        pmOverdue: 0,
+      }
+      lineRow.total += 1
+      if (fixture.status === 'In Use') lineRow.inUse += 1
+      if (fixture.status === 'Maintenance') lineRow.maintenance += 1
+      if (ORDER_STATUSES.includes(fixture.status)) lineRow.order += 1
+      if (pmOverdueDays(fixture) > 0) lineRow.pmOverdue += 1
+      lineMap.set(lineKey, lineRow)
+
+      const storageKey = fixture.usage?.storage || fixture.storage || 'ไม่ระบุ'
+      const storageRow = storageMap.get(storageKey) || {
+        location: storageKey,
+        desc: '',
+        total: 0,
+        inUse: 0,
+        maintenance: 0,
+      }
+      storageRow.total += 1
+      if (fixture.status === 'In Use') storageRow.inUse += 1
+      if (fixture.status === 'Maintenance') storageRow.maintenance += 1
+      storageMap.set(storageKey, storageRow)
     }
+
+    const lineStats = [...lineMap.values()].sort((a, b) => a.line.localeCompare(b.line))
+    const storageStats = [...storageMap.values()].sort((a, b) => a.location.localeCompare(b.location))
 
     const docs = await FixtureList.find({}, 'line model fixtureInfo').lean()
     const lines = {}
@@ -2480,6 +2883,8 @@ app.get(
       .map((fixture) => ({
         ...fixture,
         pmStates: pmStateOf(fixture),
+        pmOverdueDays: pmOverdueDays(fixture),
+        needs4M: needs4MDocument(fixture),
         usagePercent:
           Number(fixture.usage?.max) > 0
             ? Math.round(((Number(fixture.usage?.current) || 0) / Number(fixture.usage?.max)) * 100)
@@ -2493,15 +2898,61 @@ app.get(
           Math.min(...b.pmStates.map((state) => rank[state] ?? 6))
         )
       })
-      .slice(0, 8)
 
-    const [requests, recentRequests, recentHistory] = await Promise.all([
-      Request.find({}, 'status type requestType line currentModel step dueDate request_id').lean(),
-      Request.find({}).sort({ _id: -1 }).limit(5).lean(),
-      History.find({}).sort({ date: -1 }).limit(8).lean(),
+    const pmStateCounts = {}
+    for (const fixture of pmAlerts) {
+      const state = fixture.pmStates[0] || 'tracked'
+      pmStateCounts[state] = (pmStateCounts[state] || 0) + 1
+    }
+
+    const maintenanceQueue = fixtures
+      .filter((fixture) => fixture.status === 'Maintenance')
+      .map((fixture) => ({
+        sn: fixture.sn,
+        line: fixture.line,
+        model: fixture.model,
+        type: fixture.type,
+        pmDate: fixture.pmDate,
+        usage: fixture.usage,
+        pmForms: fixture.pmForms,
+        pmOverdueDays: pmOverdueDays(fixture),
+        needs4M: needs4MDocument(fixture),
+      }))
+
+    const orderFixtures = fixtures
+      .filter((fixture) => ORDER_STATUSES.includes(fixture.status))
+      .map((fixture) => ({
+        sn: fixture.sn,
+        line: fixture.line,
+        model: fixture.model,
+        type: fixture.type,
+        status: fixture.status,
+        usage: fixture.usage,
+      }))
+
+    const recentFixtures = fixtures
+      .filter((fixture) => fixture.registered?.date)
+      .sort((a, b) => new Date(b.registered.date).getTime() - new Date(a.registered.date).getTime())
+      .slice(0, 8)
+      .map((fixture) => ({
+        sn: fixture.sn,
+        line: fixture.line,
+        model: fixture.model,
+        type: fixture.type,
+        status: fixture.status,
+        storage: fixture.usage?.storage || fixture.storage || '',
+        registered: fixture.registered,
+      }))
+
+    const [requests, recentRequests, recentHistory, historyCount] = await Promise.all([
+      Request.find({}, 'status type requestType line currentModel changeModel step dueDate queueDate queueSlot request_id').lean(),
+      Request.find({}).sort({ _id: -1 }).lean(),
+      History.find({}).sort({ date: -1 }).limit(20).lean(),
+      History.countDocuments(),
     ])
 
     const requestStats = {}
+    const requestTypeStats = {}
     const byLine = {}
     const byModel = {}
     const byProcess = {}
@@ -2509,18 +2960,20 @@ app.get(
       const key = request.status || 'Unknown'
       requestStats[key] = (requestStats[key] || 0) + 1
 
+      const typeKey = request.type || 'Unknown'
+      requestTypeStats[typeKey] = (requestTypeStats[typeKey] || 0) + 1
+
       const lineKey = request.line || 'N/A'
       byLine[lineKey] = (byLine[lineKey] || 0) + 1
       const modelKey = request.currentModel || 'N/A'
       byModel[modelKey] = (byModel[modelKey] || 0) + 1
-      const processKey = request.requestType || request.type || 'N/A'
+      const processKey = request.requestType || 'N/A'
       byProcess[processKey] = (byProcess[processKey] || 0) + 1
     }
 
     const dueRequests = requests
       .filter((request) => request.dueDate)
       .sort((a, b) => String(a.dueDate).localeCompare(String(b.dueDate)))
-      .slice(0, 10)
       .map((request) => ({
         ...request,
         daysLeft: daysUntil(request.dueDate),
@@ -2539,13 +2992,52 @@ app.get(
       activeByProcess[processKey] = (activeByProcess[processKey] || 0) + 1
     }
 
+    /* Seven-day request trend — read-only input for the Dashboard area chart. */
+    const trendDays = Array.from({ length: 7 }, (_, index) => addDaysInput(todayInput(), index - 6))
+    const trendMap = new Map(trendDays.map((date) => [date, {
+      date,
+      label: `${Number(date.slice(5, 7))}/${date.slice(8, 10)}`,
+      count: 0,
+    }]))
+    for (const request of recentRequests) {
+      const rawDate = request?.requestInfo?.date || request?.date || request?.createdAt
+      if (!rawDate) continue
+      const day = String(rawDate).slice(0, 10)
+      const row = trendMap.get(day)
+      if (row) row.count += 1
+    }
+
+    /* Ranked breakdown hotspots for the Dashboard "Top fixture breakdown" list. */
+    const breakdownMap = new Map()
+    for (const fixture of fixtures) {
+      const maintenance = fixture.status === 'Maintenance' ? 1 : 0
+      const ng = ORDER_STATUSES.includes(fixture.status) ? 1 : 0
+      const pm = pmOverdueDays(fixture) > 0 ? 1 : 0
+      if (!maintenance && !ng && !pm) continue
+      const line = fixture.line || 'N/A'
+      const model = fixture.model || 'N/A'
+      const key = `${line} · ${model}`
+      const row = breakdownMap.get(key) || { key, line, model, maintenance: 0, ng: 0, pm: 0, total: 0 }
+      row.maintenance += maintenance
+      row.ng += ng
+      row.pm += pm
+      row.total += maintenance + ng + pm
+      breakdownMap.set(key, row)
+    }
+    const topBreakdown = [...breakdownMap.values()]
+      .sort((a, b) => b.total - a.total || b.maintenance - a.maintenance || a.key.localeCompare(b.key))
+      .slice(0, 6)
+
     res.json({
       success: true,
       total: fixtures.length,
       counts,
-      orderCount: fixtures.filter((fixture) => ORDER_STATUSES.includes(fixture.status)).length,
+      orderCount: orderFixtures.length,
       lines,
+      lineStats,
+      storageStats,
       requestStats,
+      requestTypeStats,
       byLine,
       byModel,
       byProcess,
@@ -2553,9 +3045,16 @@ app.get(
       activeByLine,
       activeByModel,
       activeByProcess,
+      requestTrend: [...trendMap.values()],
+      topBreakdown,
       pmAlerts,
+      pmStateCounts,
+      maintenanceQueue,
+      orderFixtures,
+      recentFixtures,
       recentRequests,
       recentHistory,
+      historyCount,
     })
   }),
 )

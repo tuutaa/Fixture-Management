@@ -41,6 +41,7 @@ const LABELS = {
   },
   requestType: {
     'Change Model': ['เปลี่ยนรุ่น', 'Change Model'],
+    Replace: ['เปลี่ยน Fixture', 'Replace'],
     Breakdown: ['เสีย', 'Breakdown'],
   },
 }
@@ -94,9 +95,13 @@ const MESSAGES = {
   'คำขอนี้ไม่สามารถ reject ได้': 'This request cannot be rejected',
   'คำขอนี้ไม่สามารถ complete ได้': 'This request cannot be completed',
   'คำขอนี้ไม่สามารถสแกนได้อีก': 'This request can no longer be scanned',
+  'คำขอนี้ไม่สามารถสแกนคืนได้': 'This request cannot be scanned for return',
   'เฉพาะช่างที่รับงานนี้เท่านั้นที่สแกนได้': 'Only the assigned technician can scan this job',
+  'เฉพาะช่างที่รับงานนี้เท่านั้นที่สแกนคืนได้': 'Only the assigned technician can scan returns',
+  'เฉพาะผู้ขอ (Requestor) เท่านั้นที่ยืนยันได้': 'Only the requester can confirm',
   'กรุณาสแกน Serial Number': 'Please scan a serial number',
   'รีเซ็ตรายการสแกนแล้ว': 'Scan list reset',
+  'รีเซ็ตรายการสแกนคืนแล้ว': 'Return scan list reset',
   'ยังไม่มี Fixture ที่สแกนตรงกัน': 'No matching fixture has been scanned yet',
   'ต้องสแกนทั้งรายการจ่ายและรับคืนก่อนกดตกลง': 'Scan both issue and return items before confirming',
   'ใช้กับคำขอ Breakdown เท่านั้น': 'Only available for Breakdown requests',
@@ -105,14 +110,23 @@ const MESSAGES = {
   'กรุณาระบุ SN ของ Spare ที่จะจ่าย': 'Please specify the SN of the spare to issue',
   'action ต้องเป็น Maintenance หรือ Issue Spare': 'Action must be Maintenance or Issue Spare',
   'คำขอนี้ยังไม่พร้อม verify': 'This request is not ready for verification',
-  'มีเพียงผู้ขอ (Requestor) เท่านั้นที่ Verify ได้': 'Only the requester can verify this job',
+  'เฉพาะผู้ขอหรือช่างที่รับงานเท่านั้นที่ยืนยันการคืนได้': 'Only the requester or assignee can confirm this return',
+  'บันทึกการยืนยันจากผู้ขอแล้ว — รอช่างที่รับงานสแกนและยืนยัน': 'Requester confirmation recorded — waiting for the assignee to scan and confirm',
+  'บันทึกการยืนยันจากช่างแล้ว — รอผู้ขอยืนยัน': 'Assignee confirmation recorded — waiting for the requester to confirm',
   'กรุณาระบุ Serial Number': 'Please specify a serial number',
   'Fixture นี้อยู่ใน Stock อยู่แล้ว': 'This fixture is already in stock',
   'กรุณาระบุ SN และจำนวนวัน': 'Please specify SN and number of days',
   'PM เกิน 7 วัน ต้อง Import เอกสาร 4M ก่อนอนุมัติ': 'PM is over 7 days — import the 4M document before approval',
   'กรุณาเลือกไฟล์เอกสาร 4M': 'Please select the 4M document file',
+  'กรุณาระบุ Line': 'Please specify a line',
+  'ต้องสแกนรายการจ่ายก่อนกดตกลง': 'Scan the issue items before confirming',
+  'กรุณาเลือกคิว Change Model (07:00–16:00)': 'Please pick a Change Model slot (07:00–16:00)',
+  'กรุณาระบุจำนวน Fixture ที่ต้องเปลี่ยน (อย่างน้อย 1)': 'Please specify how many fixtures to replace (at least 1)',
+  'ไม่มี Fixture ที่เลือกในระบบ': 'No selected fixture was found in the system',
+  'กรุณาระบุวันที่ Exp ไม่ถูกต้อง': 'Invalid expiry date',
   'กรุณาระบุ SN': 'Please specify SN',
   'Fixture นี้อยู่ใน Maintenance แล้ว': 'This fixture is already in maintenance',
+  'PM ได้เฉพาะ Fixture ที่ใช้งานอยู่ (In Use) เท่านั้น': 'PM can only be planned for fixtures currently In Use',
   'result ต้องเป็น OK หรือ NG': 'Result must be OK or NG',
   'outcome ต้องเป็น Need Scrape / Need PR / Already have PR / New One Replacement':
     'Outcome must be Need Scrape / Need PR / Already have PR / New One Replacement',
@@ -126,10 +140,30 @@ const dynamicMessage = (text) => {
   }
   m = text.match(/^ไม่พบ (.+) ในระบบ$/)
   if (m) return [text, `${m[1]} not found in the system`]
-  m = text.match(/^สแกนไม่ครบ — ยังขาด (\d+) ตัว \((.+)\)$/)
-  if (m) return [text, `Incomplete scan — ${m[1]} item(s) missing (${m[2]})`]
+  m = text.match(/^สแกน(?:จ่าย)?ไม่ครบ — ยังขาด (\d+) ตัว \((.+)\)$/)
+  if (m) return [text, `Incomplete issue scan — ${m[1]} item(s) missing (${m[2]})`]
+  m = text.match(/^สแกนคืนไม่ครบ — ยังขาด (\d+) ตัว \((.+)\)$/)
+  if (m) return [text, `Incomplete return scan — ${m[1]} item(s) missing (${m[2]})`]
+  m = text.match(/^(.+) สแกนคืนครบตามรายการที่ระบุในคำขอแล้ว$/)
+  if (m) return [text, `${m[1]} — all SNs listed in this request have been scanned`]
+  m = text.match(/^(.+) ไม่ตรงกับ Serial Number ที่ต้องคืนของคำขอนี้$/)
+  if (m) return [text, `${m[1]} is not the exact serial number required for this return`]
+  m = text.match(/^base (.+) สแกนจ่ายครบตามจำนวนที่ระบบคำนวณแล้ว$/)
+  if (m) return [text, `Base ${m[1]} — all issue items have been scanned`]
+  m = text.match(/^base (.+) สแกนคืนครบตามจำนวนที่ระบบคำนวณแล้ว$/)
+  if (m) return [text, `Base ${m[1]} — all return items have been scanned`]
+  m = text.match(/^(.+) ไม่ตรงกับรายการที่ต้องจ่ายของคำขอนี้ \(base (.+)\)$/)
+  if (m) return [text, `${m[1]} is not in this request's issue list (base ${m[2]})`]
+  m = text.match(/^(.+) ไม่ตรงกับรายการที่ต้องคืนของคำขอนี้ \(base (.+)\)$/)
+  if (m) return [text, `${m[1]} is not in this request's return list (base ${m[2]})`]
+  m = text.match(/^(.+) อยู่ในสถานะ (.+) \(ต้องเป็น In Stock ก่อนจ่าย\)$/)
+  if (m) return [text, `${m[1]} is ${m[2]} (must be In Stock before issuing)`]
+  m = text.match(/^จ่าย (\d+) ตัวสำเร็จ — (.+) พร้อม Verify และรับคืน$/)
+  if (m) return [text, `Issued ${m[1]} item(s) — ${m[2]} is ready to verify and return`]
   m = text.match(/^อัปเดต (\d+) ตัวสำเร็จ — (.+) พร้อมให้เจ้าของคำขอ Verify$/)
   if (m) return [text, `Updated ${m[1]} item(s) successfully — ${m[2]} is ready for requester verification`]
+  m = text.match(/^Verify สำเร็จ — (.+) ปิดงานแล้ว$/)
+  if (m) return [text, `Verify successful — ${m[1]} closed`]
   m = text.match(/^นำเข้าข้อมูลเรียบร้อย: เพิ่มใหม่ (\d+) รายการ, อัปเดต (\d+) รายการ, อัปเดต Fixture (\d+) ตัว$/)
   if (m) return [text, `Import complete: ${m[1]} added, ${m[2]} updated, ${m[3]} fixtures corrected`]
   m = text.match(/^นำเข้าข้อมูลเรียบร้อย: เพิ่มใหม่ (\d+) รายการ, อัปเดต (\d+) รายการ$/)
@@ -138,8 +172,14 @@ const dynamicMessage = (text) => {
   if (m) return [text, `${m[1]} fixture(s) need step/process/position correction — confirm to update and import`]
   m = text.match(/^มีคำขอ (.+) ที่ยังดำเนินการอยู่สำหรับ Fixture (.+)$/)
   if (m) return [text, `Request ${m[1]} is still active for fixture ${m[2]}`]
-  m = text.match(/^มีคำขอ (.+) ที่ยังดำเนินการอยู่สำหรับ Change Model (.+)$/)
-  if (m) return [text, `Request ${m[1]} is already active for Change Model ${m[2]}`]
+  m = text.match(/^มีคำขอ (.+) ที่ยังดำเนินการอยู่สำหรับ (.+) (.+)$/)
+  if (m) return [text, `Request ${m[1]} is already active for ${m[2]} ${m[3]}`]
+  m = text.match(/^คิว (.+) วันที่ (.+) ถูกคำขอ (.+) ใช้งานอยู่ กรุณาเลือกคิวอื่น$/)
+  if (m) return [text, `Slot ${m[1]} on ${m[2]} is already taken by ${m[3]} — please pick another slot`]
+  m = text.match(/^Fixture (.+) เกินกำหนด PM (\d+) วัน — กรุณาแนบเอกสาร 4M ก่อนแก้ไขข้อมูล$/)
+  if (m) return [text, `Fixture ${m[1]} is ${m[2]} days overdue — attach the 4M document before editing`]
+  m = text.match(/^ไม่มี Fixture ใน Line (.+) ที่เกินกำหนด PM มากกว่า 7 วัน$/)
+  if (m) return [text, `No fixture in line ${m[1]} is more than 7 days overdue`]
   m = text.match(/^ลงทะเบียน (.+) สำเร็จ \(Not Exist\)$/)
   if (m) return [text, `Registered ${m[1]} successfully (Not Exist)`]
   m = text.match(/^Fixture นี้ไม่ได้อยู่ใน Stock \((.+)\)$/)

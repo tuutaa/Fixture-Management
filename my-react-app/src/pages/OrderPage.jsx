@@ -42,13 +42,40 @@ const resolveChangeModel = (request) => {
   return index >= 0 ? desc.slice(index + 1).trim() : ''
 }
 
-const isChangeModel = (request) => /change\s*model/i.test(String(request?.type || ''))
+const isModelSwap = (request) => /change\s*model|replace/i.test(String(request?.type || ''))
+const isReplace = (request) => /replace/i.test(String(request?.type || ''))
 const isBreakdown = (request) => /breakdown/i.test(String(request?.type || ''))
+
+/* Slot stored on a request is the start hour (e.g. "07:00"); show its 1-hour range. */
+const slotLabel = (slot) => {
+  if (!slot) return ''
+  const hour = Number(String(slot).split(':')[0])
+  if (!Number.isFinite(hour)) return String(slot)
+  return `${String(hour).padStart(2, '0')}:00–${String(hour + 1).padStart(2, '0')}:00`
+}
+
+const lineLabel = (request) => {
+  const line = String(request?.line || '').trim()
+  const slot = slotLabel(request?.queueSlot)
+  return slot ? `${line} ● ${slot}` : line
+}
+
+const replaceQtyLabel = (request, t) => {
+  const qty = Number(request?.replaceQty)
+  const count = Number.isInteger(qty) && qty >= 1 ? qty : 0
+  return count ? `${t('Replace', 'Replace')} ${count} ${t('ตัว', 'pcs')}` : t('Replace', 'Replace')
+}
 
 const isRequestor = (request, user) => {
   const owner = String(request?.requestInfo?.empId || '').toLowerCase()
   const actor = String(user?.userId || user?.empId || '').toLowerCase()
   return Boolean(owner && owner === actor)
+}
+
+const isAssignee = (request, user) => {
+  const tech = String(request?.acceptInfo?.empId || request?.issueInfo?.empId || '').toLowerCase()
+  const actor = String(user?.userId || user?.empId || '').toLowerCase()
+  return Boolean(tech && tech === actor)
 }
 
 const personLabel = (person) => {
@@ -71,6 +98,9 @@ const STATUS_STYLE = {
   Verify: { bg: 'bg-emerald-50', badge: 'bg-emerald-600', label: 'VERIFY' },
   Done: { bg: 'bg-emerald-50', badge: 'bg-emerald-600', label: 'DONE' },
 }
+
+const DONE_CHIP = 'bg-emerald-100 text-emerald-700'
+const PENDING_CHIP = 'bg-slate-100 text-slate-600'
 
 const ChangeGroup = ({ title, tone, items, icon: Icon, t }) => {
   const tones = {
@@ -114,12 +144,11 @@ const ChangeGroup = ({ title, tone, items, icon: Icon, t }) => {
   )
 }
 
-const CompareBlock = ({ loading, error, compare, t }) => {
-  const changeGroups = [
-    { key: 'issue', title: t('ต้องเตรียม / เบิกใหม่', 'Prepare / Issue new'), tone: 'blue', icon: PackagePlus },
-    { key: 'keep', title: t('ใช้ต่อได้', 'Can continue using'), tone: 'emerald', icon: CheckCircle2 },
-    { key: 'return', title: t('ต้องคืน', 'Must return'), tone: 'red', icon: Undo2 },
-  ]
+const CompareBlock = ({ loading, error, compare, phase = 'issue', t }) => {
+  /* Progress shows what must be issued; Verify shows what comes back. */
+  const changeGroups = phase === 'return'
+    ? [{ key: 'return', title: t('ต้องคืน', 'Must return'), tone: 'red', icon: Undo2 }]
+    : [{ key: 'issue', title: t('ต้องเตรียม / เบิกใหม่', 'Prepare / Issue new'), tone: 'blue', icon: PackagePlus }]
   if (loading) {
     return (
       <div className="rounded-2xl border border-slate-200 bg-white py-8">
@@ -136,7 +165,7 @@ const CompareBlock = ({ loading, error, compare, t }) => {
   }
   if (!compare) return null
   return (
-    <div className="grid gap-3 sm:grid-cols-3">
+    <div className="grid gap-3">
       {changeGroups.map((group) => (
         <ChangeGroup
           key={group.key}
@@ -147,6 +176,119 @@ const CompareBlock = ({ loading, error, compare, t }) => {
           t={t}
         />
       ))}
+    </div>
+  )
+}
+
+const PlanOverview = ({ compare, planData, loading, error, t }) => {
+  const normSn = (value) => String(value || '').trim().toUpperCase()
+  const baseSn = (value) => normSn(value).replace(/-\d+$/, '')
+  const plan = Array.isArray(planData?.plan) ? planData.plan : []
+  const matches = Array.isArray(planData?.matches) ? planData.matches : []
+  const issueItems = plan.length ? plan.filter((item) => item.action === 'issue') : (compare?.issue || [])
+  const returnItems = plan.length ? plan.filter((item) => item.action === 'return') : (compare?.return || [])
+  const keepItems = compare?.keep || []
+  const matched = (item, action) => matches.some((match) => {
+    if (match.action !== action) return false
+    const a = normSn(match.planSn || match.sn)
+    const b = normSn(item.sn)
+    return a === b || baseSn(a) === baseSn(b)
+  })
+
+  const groups = [
+    {
+      key: 'issue',
+      title: t('จ่าย / เบิกใหม่', 'Issue / prepare'),
+      icon: PackagePlus,
+      tone: 'blue',
+      items: issueItems,
+      tag: t('จ่าย', 'Issue'),
+      isDone: (item) => matched(item, 'issue'),
+      doneText: t('สแกนจ่ายแล้ว', 'Issue scanned'),
+      todoText: t('รอสแกนจ่าย', 'Awaiting issue scan'),
+    },
+    {
+      key: 'keep',
+      title: t('ใช้ได้ / ใช้ต่อ', 'Usable / keep'),
+      icon: Wrench,
+      tone: 'violet',
+      items: keepItems,
+      tag: t('ใช้ได้', 'In use'),
+      isDone: () => true,
+      doneText: t('ใช้ต่อได้', 'Kept in use'),
+      todoText: '',
+    },
+    {
+      key: 'return',
+      title: t('คืน / รับเข้า Stock', 'Return / back to stock'),
+      icon: Undo2,
+      tone: 'red',
+      items: returnItems,
+      tag: t('คืน', 'Return'),
+      isDone: (item) => matched(item, 'return'),
+      doneText: t('สแกนคืนแล้ว', 'Return scanned'),
+      todoText: t('รอสแกนคืน', 'Awaiting return scan'),
+    },
+  ]
+
+  if (loading) {
+    return <div className="rounded-2xl border border-slate-200 bg-white py-8"><Spinner label={t('กำลังโหลดข้อมูล…', 'Loading…')} /></div>
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="text-[11px] font-black uppercase tracking-[0.12em] text-slate-500">
+        {t('ภาพรวมการจ่าย / ใช้ได้ / คืน', 'Issue / usable / return overview')}
+      </p>
+      {error ? (
+        <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[11px] font-semibold text-red-700">{error}</p>
+      ) : null}
+      <div className="grid gap-3 md:grid-cols-3">
+        {groups.map((group) => {
+          const Icon = group.icon
+          const doneCount = group.items.filter(group.isDone).length
+          return (
+            <div key={group.key} className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+              <div className="flex items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/70 px-3 py-2">
+                <p className="flex items-center gap-1.5 text-[11px] font-black text-slate-700">
+                  <Icon className="h-3.5 w-3.5 text-slate-500" />
+                  {group.title}
+                </p>
+                <span className="rounded-lg bg-white px-2 py-0.5 text-[10px] font-black text-slate-600">
+                  {doneCount}/{group.items.length}
+                </span>
+              </div>
+              {group.items.length === 0 ? (
+                <p className="px-3 py-3 text-[11px] font-medium text-slate-400">{t('ไม่มีรายการ', 'No items')}</p>
+              ) : (
+                <div className="max-h-44 overflow-auto">
+                  {group.items.map((item, index) => {
+                    const done = group.isDone(item)
+                    return (
+                      <div key={`${group.key}-${item.sn}-${index}`} className="flex items-start gap-2 border-b border-slate-100 px-3 py-1.5 last:border-0">
+                        <span className="mt-0.5 shrink-0">
+                          {done
+                            ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                            : <span className="block h-2 w-2 rounded-full bg-red-500" />}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-mono text-[11px] font-bold text-slate-800">{item.sn}</p>
+                          <p className="truncate text-[9px] font-semibold text-slate-400">{item.position || item.process || '-'}</p>
+                        </div>
+                        <span className={`shrink-0 rounded-lg px-1.5 py-0.5 text-[9px] font-black ${
+                          done ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'
+                        }`}>
+                          {done ? group.doneText : group.todoText}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -165,6 +307,10 @@ export default function OrderPage({ user }) {
   const [actionPassword, setActionPassword] = useState('')
   const [actionBusy, setActionBusy] = useState(false)
   const [scanRequest, setScanRequest] = useState(null)
+  const [scanPhase, setScanPhase] = useState('issue')
+  const [detailPlan, setDetailPlan] = useState(null)
+  const [detailPlanLoading, setDetailPlanLoading] = useState(false)
+  const [detailPlanError, setDetailPlanError] = useState('')
   const [compare, setCompare] = useState(null)
   const [compareLoading, setCompareLoading] = useState(false)
   const [compareError, setCompareError] = useState('')
@@ -183,7 +329,6 @@ export default function OrderPage({ user }) {
   const ACTION_META = {
     hold: { label: t('พักงาน', 'Hold'), hint: t('ยืนยันการพักงาน (Hold)', 'Confirm hold (Hold)') },
     reject: { label: t('ปฏิเสธ', 'Reject'), hint: t('ยืนยันการปฏิเสธงาน (Reject)', 'Confirm reject (Reject)') },
-    verify: { label: t('ตรวจสอบ', 'Verify'), hint: t('ยืนยันผลงาน (Verify)', 'Confirm verify (Verify)') },
   }
 
   const ACTION_PEOPLE = [
@@ -302,10 +447,13 @@ export default function OrderPage({ user }) {
   const handleVerify = async (request) => {
     setBusyId(request.request_id)
     try {
-      await api.verifyRequest(request.request_id, user)
-      toast.success(t('Verify สำเร็จ', 'Verify successful'))
+      const payload = await api.verifyRequest(request.request_id, user)
+      toast.success(sm(payload?.message || t('Verify สำเร็จ', 'Verify successful')))
       await reloadRows()
-      return true
+      if (payload?.request) {
+        setDetail((prev) => (prev?.request_id === request.request_id ? payload.request : prev))
+      }
+      return payload
     } catch (err) {
       toast.error(sm(err.message))
       return false
@@ -330,7 +478,6 @@ export default function OrderPage({ user }) {
       const runners = {
         hold: handleHold,
         reject: handleReject,
-        verify: handleVerify,
       }
       const runner = runners[actionModal.action]
       if (!runner) return
@@ -353,7 +500,7 @@ export default function OrderPage({ user }) {
     const from = String(compareSource.currentModel || '').trim()
     const to = resolveChangeModel(compareSource)
     const line = String(compareSource.line || '').trim()
-    if (!isChangeModel(compareSource) || !line || !from || !to) {
+    if (!isModelSwap(compareSource) || !line || !from || !to) {
       setCompare(null)
       return undefined
     }
@@ -366,6 +513,23 @@ export default function OrderPage({ user }) {
       .finally(() => { if (!cancelled) setCompareLoading(false) })
     return () => { cancelled = true }
   }, [compareSource])
+
+  /* Information modal: load the full issue / usable / return plan for Change Model. */
+  useEffect(() => {
+    if (!detail || !isModelSwap(detail)) {
+      setDetailPlan(null)
+      setDetailPlanError('')
+      return undefined
+    }
+    let cancelled = false
+    setDetailPlanLoading(true)
+    setDetailPlanError('')
+    api.scanPlan(detail.request_id)
+      .then((data) => { if (!cancelled) setDetailPlan(data) })
+      .catch((err) => { if (!cancelled) setDetailPlanError(err.message) })
+      .finally(() => { if (!cancelled) setDetailPlanLoading(false) })
+    return () => { cancelled = true }
+  }, [detail])
 
   const acceptModelTo = acceptModal ? resolveChangeModel(acceptModal) : ''
 
@@ -408,6 +572,8 @@ export default function OrderPage({ user }) {
               ? requestStatus(status)
               : (status || t('ไม่ทราบ', 'Unknown'))
             const changeModel = resolveChangeModel(r)
+            const approvals = Array.isArray(r.returnApprovals) ? r.returnApprovals : []
+            const hasApproval = (role) => approvals.some((item) => item.role === role)
             return (
               <div
                 key={r.request_id}
@@ -425,7 +591,7 @@ export default function OrderPage({ user }) {
                     {requestType(r.type)}
                   </h3>
                   <div className="mt-2 flex flex-wrap items-center gap-x-2 leading-tight min-w-0">
-                    <p className="text-lg font-extrabold text-slate-900 break-words">{r.line}</p>
+                    <p className="text-lg font-extrabold text-slate-900 break-words">{lineLabel(r)}</p>
                   </div>
                 </div>
 
@@ -433,11 +599,16 @@ export default function OrderPage({ user }) {
                 <div className="p-4 flex-1 flex flex-col justify-start space-y-3">
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-black uppercase tracking-wide ${
-                      isChangeModel(r) ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'
+                      isModelSwap(r) ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'
                     }`}>
-                      {isChangeModel(r) ? <ArrowRight className="h-3 w-3" /> : <Wrench className="h-3 w-3" />}
-                      {requestType(isChangeModel(r) ? 'Change Model' : 'Breakdown')}
+                      {isModelSwap(r) ? <ArrowRight className="h-3 w-3" /> : <Wrench className="h-3 w-3" />}
+                      {requestType(isModelSwap(r) ? r.type : 'Breakdown')}
                     </span>
+                    {isReplace(r) ? (
+                      <span className="inline-flex items-center rounded-lg bg-violet-100 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-violet-700">
+                        {replaceQtyLabel(r, t)}
+                      </span>
+                    ) : null}
                     <span className="request-type-badge text-[10px] font-bold text-slate-400 uppercase">
                       {r.requestType ? requestType(r.requestType) : ''}
                     </span>
@@ -458,22 +629,33 @@ export default function OrderPage({ user }) {
                         "{r.desc || '-'}"
                       </p>
                     )}
-                    {isChangeModel(r) && changeModel ? (
+                    {isModelSwap(r) && changeModel ? (
                       <p className="mt-1 text-[10px] text-slate-500">
                         {r.currentModel || '-'} <ArrowRight className="inline h-3 w-3" /> {changeModel}
                       </p>
                     ) : null}
                   </div>
 
-                  {status === 'Progress' || status === 'Verify' ? (
+                  {status === 'Progress' ? (
                     <div className="flex flex-wrap gap-1.5 text-[10px] font-bold">
-                      <span className={`rounded-lg px-2 py-1 ${r.issueDone ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                      <span className={`rounded-lg px-2 py-1 ${r.issueDone ? DONE_CHIP : PENDING_CHIP}`}>
                         {r.issueDone ? <CheckCircle2 className="mr-1 inline h-3 w-3" /> : null}
                         {t('จ่าย', 'Issue')} {Array.isArray(r.scannedIssue) ? r.scannedIssue.length : 0}
                       </span>
-                      <span className={`rounded-lg px-2 py-1 ${r.returnDone ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                    </div>
+                  ) : status === 'Verify' ? (
+                    <div className="flex flex-wrap gap-1.5 text-[10px] font-bold">
+                      <span className={`rounded-lg px-2 py-1 ${r.returnDone ? DONE_CHIP : PENDING_CHIP}`}>
                         {r.returnDone ? <CheckCircle2 className="mr-1 inline h-3 w-3" /> : null}
                         {t('รับคืน', 'Return')} {Array.isArray(r.returnedItems) ? r.returnedItems.length : 0}
+                      </span>
+                      <span className={`rounded-lg px-2 py-1 ${hasApproval('requester') ? DONE_CHIP : PENDING_CHIP}`}>
+                        {hasApproval('requester') ? <CheckCircle2 className="mr-1 inline h-3 w-3" /> : null}
+                        {t('ผู้ขอ', 'Requester')}
+                      </span>
+                      <span className={`rounded-lg px-2 py-1 ${hasApproval('assignee') ? DONE_CHIP : PENDING_CHIP}`}>
+                        {hasApproval('assignee') ? <CheckCircle2 className="mr-1 inline h-3 w-3" /> : null}
+                        {t('ช่าง', 'Assignee')}
                       </span>
                     </div>
                   ) : null}
@@ -548,7 +730,7 @@ export default function OrderPage({ user }) {
                         className="h-9 flex-[7]"
                         disabled={busy}
                         icon={ScanLine}
-                        onClick={() => setScanRequest(r)}
+                        onClick={() => { setScanPhase('issue'); setScanRequest(r) }}
                       >
                         {t('เสร็จงาน / สแกน', 'Complete / Scan')}
                       </Button>
@@ -556,19 +738,22 @@ export default function OrderPage({ user }) {
                   ) : null}
 
                   {status === 'Verify' ? (
-                    isRequestor(r, user) ? (
+                    isRequestor(r, user) || isAssignee(r, user) ? (
                       <Button
                         size="sm"
                         variant="success"
                         className="h-9 flex-1"
                         disabled={busy}
-                        onClick={() => openActionModal(r, 'verify')}
+                        icon={Undo2}
+                        onClick={() => { setScanPhase('return'); setScanRequest(r) }}
                       >
-                        {t('ตรวจสอบ', 'Verify')}
+                        {isRequestor(r, user)
+                          ? t('Verify / ยืนยัน', 'Verify / Confirm')
+                          : t('ยืนยันรับคืน', 'Confirm return')}
                       </Button>
                     ) : (
                       <div className="flex h-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-[10px] font-bold text-slate-400">
-                        {t('รอเจ้าของคำขอ Verify', 'Waiting for requester to verify')}
+                        {t('รอผู้ขอหรือช่างที่รับงานยืนยัน', 'Waiting for requester or assignee')}
                       </div>
                     )
                   ) : null}
@@ -593,7 +778,7 @@ export default function OrderPage({ user }) {
         {detail ? (
           <div className="space-y-4">
             <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/60 p-4 sm:grid-cols-3">
-              <InfoRow label={t('Line', 'Line')}>{detail.line || '-'}</InfoRow>
+              <InfoRow label={t('Line', 'Line')}>{lineLabel(detail)}</InfoRow>
               <InfoRow label={t('Model', 'Model')}>
                 <span className="font-mono text-[11px]">{detail.currentModel || '-'}</span>
               </InfoRow>
@@ -601,6 +786,16 @@ export default function OrderPage({ user }) {
                 <span className="font-mono text-[11px]">{resolveChangeModel(detail) || '-'}</span>
               </InfoRow>
               <InfoRow label={t('ประเภทคำขอ', 'Request type')}>{requestType(detail.type)}</InfoRow>
+              {isModelSwap(detail) ? (
+                <InfoRow label={t('เปลี่ยนรุ่น A → B', 'Model A → B')}>
+                  <span className="font-mono text-[11px]">
+                    {detail.currentModel || '-'} <ArrowRight className="inline h-3 w-3" /> {resolveChangeModel(detail) || '-'}
+                  </span>
+                </InfoRow>
+              ) : null}
+              {isReplace(detail) ? (
+                <InfoRow label={t('จำนวนที่เปลี่ยน', 'Replace qty')}>{replaceQtyLabel(detail, t)}</InfoRow>
+              ) : null}
               <InfoRow label={t('ผู้ขอ', 'Requester')}>
                 {personLabel(detail.requestInfo)} · {formatDateTime(detail.requestInfo?.date)}
               </InfoRow>
@@ -647,8 +842,14 @@ export default function OrderPage({ user }) {
                 ))}
               </div>
             ) : null}
-            {isChangeModel(detail) ? (
-              <CompareBlock loading={compareLoading} error={sm(compareError)} compare={compare} t={t} />
+            {isModelSwap(detail) ? (
+              <PlanOverview
+                compare={compare}
+                planData={detailPlan}
+                loading={compareLoading || detailPlanLoading}
+                error={sm(compareError || detailPlanError)}
+                t={t}
+              />
             ) : null}
           </div>
         ) : null}
@@ -665,7 +866,7 @@ export default function OrderPage({ user }) {
         {acceptModal ? (
           <div className="space-y-4">
             <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/60 p-4 sm:grid-cols-3">
-              <InfoRow label={t('Line', 'Line')}>{acceptModal.line || '-'}</InfoRow>
+              <InfoRow label={t('Line', 'Line')}>{lineLabel(acceptModal)}</InfoRow>
               <InfoRow label={t('Model', 'Model')}>
                 <span className="font-mono text-[11px]">{acceptModal.currentModel || '-'}</span>
               </InfoRow>
@@ -673,6 +874,16 @@ export default function OrderPage({ user }) {
                 <span className="font-mono text-[11px]">{acceptModelTo || '-'}</span>
               </InfoRow>
               <InfoRow label={t('ประเภทคำขอ', 'Request type')}>{requestType(acceptModal.type)}</InfoRow>
+              {isModelSwap(acceptModal) ? (
+                <InfoRow label={t('เปลี่ยนรุ่น A → B', 'Model A → B')}>
+                  <span className="font-mono text-[11px]">
+                    {acceptModal.currentModel || '-'} <ArrowRight className="inline h-3 w-3" /> {acceptModelTo || '-'}
+                  </span>
+                </InfoRow>
+              ) : null}
+              {isReplace(acceptModal) ? (
+                <InfoRow label={t('จำนวนที่เปลี่ยน', 'Replace qty')}>{replaceQtyLabel(acceptModal, t)}</InfoRow>
+              ) : null}
               <InfoRow label={t('ผู้ขอ', 'Requester')}>
                 {personLabel(acceptModal.requestInfo)} · {formatDateTime(acceptModal.requestInfo?.date)}
               </InfoRow>
@@ -691,8 +902,14 @@ export default function OrderPage({ user }) {
               </div>
             ) : null}
 
-            {isChangeModel(acceptModal) ? (
-              <CompareBlock loading={compareLoading} error={sm(compareError)} compare={compare} t={t} />
+            {isModelSwap(acceptModal) ? (
+              <CompareBlock
+                loading={compareLoading}
+                error={sm(compareError)}
+                compare={compare}
+                phase="issue"
+                t={t}
+              />
             ) : null}
 
             <div className="space-y-2">
@@ -730,8 +947,11 @@ export default function OrderPage({ user }) {
         {actionModal ? (
           <div className="space-y-4">
             <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
-              <InfoRow label={t('Line', 'Line')}>{actionModal.request?.line || '-'}</InfoRow>
+              <InfoRow label={t('Line', 'Line')}>{lineLabel(actionModal.request)}</InfoRow>
               <InfoRow label={t('ประเภทคำขอ', 'Request type')}>{requestType(actionModal.request?.type)}</InfoRow>
+              {isReplace(actionModal.request) ? (
+                <InfoRow label={t('จำนวนที่เปลี่ยน', 'Replace qty')}>{replaceQtyLabel(actionModal.request, t)}</InfoRow>
+              ) : null}
               <InfoRow label={t('สถานะ', 'Status')}>
                 {actionModal.request?.status ? requestStatus(actionModal.request.status) : '-'} → {ACTION_META[actionModal.action]?.label}
               </InfoRow>
@@ -752,7 +972,7 @@ export default function OrderPage({ user }) {
                 {t('ยกเลิก', 'Cancel')}
               </Button>
               <Button
-                variant={actionModal.action === 'hold' ? 'warning' : actionModal.action === 'verify' ? 'success' : 'primary'}
+                variant={actionModal.action === 'hold' ? 'warning' : 'primary'}
                 size="sm"
                 disabled={actionBusy}
                 onClick={confirmAction}
@@ -768,8 +988,10 @@ export default function OrderPage({ user }) {
         open={Boolean(scanRequest)}
         request={scanRequest}
         user={user}
+        phase={scanPhase}
         onClose={() => setScanRequest(null)}
         onDone={reloadRows}
+        onVerify={handleVerify}
       />
     </div>
   )

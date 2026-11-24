@@ -92,9 +92,10 @@ export const REQUEST_STATUS_TONE = {
   },
 }
 
-/* Request type per flow: Change Model | Breakdown */
+/* Request type per flow: Change Model | Replace | Breakdown */
 export const REQUEST_TYPES = [
   { value: 'Change Model', label: 'เปลี่ยนรุ่น (Change Model)', hint: 'MainLine / Rotor → Compare Model A → B' },
+  { value: 'Replace', label: 'เปลี่ยน Fixture (Replace)', hint: 'เหมือนเปลี่ยนรุ่น แต่ระบุจำนวนเครื่องที่ต้องเปลี่ยน' },
   { value: 'Breakdown', label: 'Fixture เสีย (Breakdown)', hint: 'Verify → Issue Spare / PM & Maintenance' },
 ]
 

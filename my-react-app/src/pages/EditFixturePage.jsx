@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Boxes,
+  CalendarClock,
   Database,
   Info,
   Lock,
@@ -36,7 +37,7 @@ import Tabs from '../components/ui/Tabs'
 import DataTable from '../components/ui/DataTable'
 import Modal from '../components/ui/Modal'
 import { useToast } from '../components/ui/Toast'
-import { cn, formatDate, formatDateTime, toDateInput } from '../lib/format'
+import { cn, daysUntil, formatDate, formatDateTime, toDateInput } from '../lib/format'
 import { useLabels, useServerMessage } from '../lib/i18n'
 
 const EMPTY_FILTERS = {
@@ -120,6 +121,29 @@ const positionsForProcess = (options, processValue) => {
   return valuesFor(options, 'positions')
 }
 
+/* Mirrors the server 4M guard: overdue > 7 days with no attached pmForms.
+ * Prefer an explicit server flag; otherwise derive it from usage.exp. */
+const fixture4MBlock = (row) => {
+  if (!row) return null
+  const days = daysUntil(row.usage?.exp)
+  const overdueDays = days === null ? 0 : Math.max(0, -days)
+  const hasForms = Array.isArray(row.pmForms) && row.pmForms.length > 0
+  const needs4M =
+    typeof row.needs4M === 'boolean' ? row.needs4M : overdueDays > 7 && !hasForms
+  if (!needs4M) return null
+  const reportedDays = Number(row.pmOverdueDays)
+  return {
+    sn: row.sn,
+    days: Number.isFinite(reportedDays) && reportedDays > 0 ? reportedDays : overdueDays,
+  }
+}
+
+const block4MMessage = (block, t) =>
+  t(
+    `Fixture ${block.sn} เกินกำหนด PM ${block.days} วัน — กรุณาแนบเอกสาร 4M ก่อนแก้ไขข้อมูล`,
+    `Fixture ${block.sn} is ${block.days} days overdue — attach the 4M document before editing`,
+  )
+
 /* Mirrors the shared status chip markup, with a translated label. */
 const StatusBadge = ({ status, label }) => {
   const tone = fixtureTone(status)
@@ -157,6 +181,8 @@ export default function EditFixturePage({ user }) {
   const [confirm, setConfirm] = useState(null)
   const [fixtureHistory, setFixtureHistory] = useState([])
   const [historyLoading, setHistoryLoading] = useState(false)
+  // Persistent banner for the server's 4M guard (HTTP 409).
+  const [blocked4MMessage, setBlocked4MMessage] = useState('')
 
   // Storage management state
   const [storages, setStorages] = useState([])
@@ -165,6 +191,15 @@ export default function EditFixturePage({ user }) {
   const [storageModal, setStorageModal] = useState(null) // null | { mode: 'create' | 'edit', data?: object }
   const [storageForm, setStorageForm] = useState({ location: '', desc: '' })
   const [storageBusy, setStorageBusy] = useState(false)
+
+  // Due Date tab — same filters, multi-select table, one shared exp date for the selection.
+  const [dueFilters, setDueFilters] = useState(EMPTY_FILTERS)
+  const [dueResults, setDueResults] = useState([])
+  const [dueResultsLoading, setDueResultsLoading] = useState(true)
+  const [dueResultsError, setDueResultsError] = useState('')
+  const [dueSelected, setDueSelected] = useState(() => new Set())
+  const [bulkExp, setBulkExp] = useState('')
+  const [bulkBusy, setBulkBusy] = useState(false)
 
   const loadStorages = useCallback(async () => {
     try {
@@ -207,11 +242,29 @@ export default function EditFixturePage({ user }) {
     [sm],
   )
 
+  const fetchDueFixtures = useCallback(
+    async (values = EMPTY_FILTERS) => {
+      setDueResultsLoading(true)
+      setDueResultsError('')
+      try {
+        const data = await api.editFixtures(values)
+        setDueResults(Array.isArray(data) ? data : [])
+      } catch (err) {
+        setDueResults([])
+        setDueResultsError(sm(err.message))
+      } finally {
+        setDueResultsLoading(false)
+      }
+    },
+    [sm],
+  )
+
   useEffect(() => {
     fetchFixtures(EMPTY_FILTERS)
+    fetchDueFixtures(EMPTY_FILTERS)
     loadFieldOptions()
     loadStorages()
-  }, [fetchFixtures, loadFieldOptions, loadStorages])
+  }, [fetchDueFixtures, fetchFixtures, loadFieldOptions, loadStorages])
 
   // After choosing a row, bring the editor into view without manual scrolling.
   useEffect(() => {
@@ -235,6 +288,22 @@ export default function EditFixturePage({ user }) {
     fetchFixtures(EMPTY_FILTERS)
   }
 
+  const setDueFilter = (key, value) =>
+    setDueFilters((current) => {
+      const next = { ...current, [key]: value }
+      if (key === 'process' && value !== current.process) next.position = ''
+      return next
+    })
+  const runDueSearch = () => {
+    setDueSelected(new Set())
+    fetchDueFixtures(dueFilters)
+  }
+  const clearDueFilters = () => {
+    setDueFilters(EMPTY_FILTERS)
+    setDueSelected(new Set())
+    fetchDueFixtures(EMPTY_FILTERS)
+  }
+
   const loadSelected = useCallback(
     async (sn) => {
       const value = String(sn || '').trim()
@@ -244,6 +313,7 @@ export default function EditFixturePage({ user }) {
         const data = await api.fixture(value)
         const nextForm = formFromFixture(data.fixture)
         scrollToEditorRef.current = true
+        setBlocked4MMessage('')
         setFixture(data.fixture)
         setForm(nextForm)
         setOriginalForm(nextForm)
@@ -272,7 +342,34 @@ export default function EditFixturePage({ user }) {
     setForm(emptyForm)
     setOriginalForm(emptyForm)
     setFixtureHistory([])
+    setBlocked4MMessage('')
   }
+
+  // Keep the server's 409 message on screen (not just in a toast) until a later
+  // successful action clears it.
+  const handleActionError = (err) => {
+    const message = sm(err?.message) || t('บันทึกไม่สำเร็จ', 'Action failed')
+    if (
+      err?.status === 409 &&
+      (err?.payload?.needs4M === true || /4M|เกินกำหนด PM/i.test(String(err?.message || '')))
+    ) {
+      setBlocked4MMessage(message)
+    }
+    toast.error(message)
+  }
+
+  const selected4MBlock = useMemo(() => fixture4MBlock(fixture), [fixture])
+  const bulk4MBlocks = useMemo(
+    () =>
+      dueResults
+        .filter((row) => dueSelected.has(row.sn))
+        .map((row) => fixture4MBlock(row))
+        .filter(Boolean),
+    [dueResults, dueSelected],
+  )
+  const active4MBlock = selected4MBlock || bulk4MBlocks[0] || null
+  const active4MMessage =
+    blocked4MMessage || (active4MBlock ? block4MMessage(active4MBlock, t) : '')
 
   const setField = (key, value) =>
     setForm((current) => {
@@ -297,6 +394,10 @@ export default function EditFixturePage({ user }) {
   const positionFilterOptions = useMemo(
     () => toOptions(positionsForProcess(fieldOptions, filters.process)),
     [fieldOptions, filters.process],
+  )
+  const duePositionFilterOptions = useMemo(
+    () => toOptions(positionsForProcess(fieldOptions, dueFilters.process)),
+    [dueFilters.process, fieldOptions],
   )
   const storageFilterOptions = useMemo(
     () => toOptions([...valuesFor(fieldOptions, 'storages'), ...storages.map((row) => row.location)]),
@@ -346,33 +447,21 @@ export default function EditFixturePage({ user }) {
     [fieldOptions, storages, form.usageStorage],
   )
 
-  const filterFields = useMemo(
-    () => [
-      { key: 'line', label: t('Line', 'Line'), options: lineFilterOptions },
-      { key: 'model', label: t('Model', 'Model'), options: modelFilterOptions },
-      { key: 'status', label: t('สถานะ', 'Status'), options: statusFilterOptions },
-      { key: 'type', label: t('Process Type', 'Process Type'), options: processTypeFilterOptions },
-      { key: 'step', label: t('Step', 'Step'), options: stepFilterOptions },
-      { key: 'process', label: t('Process', 'Process'), options: processFilterOptions },
-      { key: 'position', label: t('Position', 'Position'), options: positionFilterOptions },
-      { key: 'storage', label: t('ตำแหน่งเก็บ', 'Storage'), options: storageFilterOptions },
-      { key: 'fixtureBase', label: t('Fixture Base', 'Fixture Base'), options: fixtureBaseFilterOptions },
-      { key: 'revision', label: t('Revision', 'Revision'), options: revisionFilterOptions },
-    ],
-    [
-      t,
-      lineFilterOptions,
-      modelFilterOptions,
-      statusFilterOptions,
-      processTypeFilterOptions,
-      stepFilterOptions,
-      processFilterOptions,
-      positionFilterOptions,
-      storageFilterOptions,
-      fixtureBaseFilterOptions,
-      revisionFilterOptions,
-    ],
-  )
+  // Shared by Fixture and Due Date tabs — only the Process → Position options differ.
+  const buildFilterFields = (positionOptions) => [
+    { key: 'line', label: t('Line', 'Line'), options: lineFilterOptions },
+    { key: 'model', label: t('Model', 'Model'), options: modelFilterOptions },
+    { key: 'status', label: t('สถานะ', 'Status'), options: statusFilterOptions },
+    { key: 'type', label: t('Process Type', 'Process Type'), options: processTypeFilterOptions },
+    { key: 'step', label: t('Step', 'Step'), options: stepFilterOptions },
+    { key: 'process', label: t('Process', 'Process'), options: processFilterOptions },
+    { key: 'position', label: t('Position', 'Position'), options: positionOptions },
+    { key: 'storage', label: t('ตำแหน่งเก็บ', 'Storage'), options: storageFilterOptions },
+    { key: 'fixtureBase', label: t('Fixture Base', 'Fixture Base'), options: fixtureBaseFilterOptions },
+    { key: 'revision', label: t('Revision', 'Revision'), options: revisionFilterOptions },
+  ]
+  const filterFields = buildFilterFields(positionFilterOptions)
+  const dueFilterFields = buildFilterFields(duePositionFilterOptions)
 
   const dirtyFields = useMemo(() => {
     const keys = Object.keys(emptyForm)
@@ -464,9 +553,80 @@ export default function EditFixturePage({ user }) {
     [fixtureStatus, loadSelected, t],
   )
 
+  const dueResultColumns = useMemo(
+    () => [
+      {
+        key: 'select',
+        header: t('เลือก', 'Select'),
+        align: 'center',
+        sortable: false,
+        render: (row) => (
+          <input
+            type="checkbox"
+            checked={dueSelected.has(row.sn)}
+            aria-label={t(`เลือก ${row.sn}`, `Select ${row.sn}`)}
+            onClick={(event) => event.stopPropagation()}
+            onChange={() =>
+              setDueSelected((current) => {
+                const next = new Set(current)
+                if (next.has(row.sn)) next.delete(row.sn)
+                else next.add(row.sn)
+                return next
+              })
+            }
+            className="h-3.5 w-3.5 cursor-pointer rounded border-slate-300 accent-blue-600"
+          />
+        ),
+      },
+      {
+        key: 'sn',
+        header: t('Serial Number', 'Serial Number'),
+        render: (row) => <span className="font-mono text-xs font-black text-slate-800">{row.sn}</span>,
+      },
+      {
+        key: 'type',
+        header: t('Process Type', 'Process Type'),
+        render: (row) => <span className="text-[11px] text-slate-600">{processTypeLabel(row.type) || '-'}</span>,
+      },
+      { key: 'line', header: t('Line', 'Line'), render: (row) => <span className="text-xs font-semibold text-slate-700">{row.line || '-'}</span> },
+      {
+        key: 'model',
+        header: t('Model', 'Model'),
+        render: (row) => <span className="font-mono text-[10px] text-slate-600">{row.model || '-'}</span>,
+      },
+      {
+        key: 'position',
+        header: t('Position', 'Position'),
+        render: (row) => <span className="text-[11px] text-slate-600">{row.position || '-'}</span>,
+      },
+      {
+        key: 'exp',
+        header: t('Exp (PM Due)', 'Exp (PM Due)'),
+        render: (row) => (
+          <span className={cn('font-mono text-[11px]', !row.usage?.exp && 'text-slate-400')}>
+            {formatDate(row.usage?.exp)}
+          </span>
+        ),
+      },
+      {
+        key: 'status',
+        header: t('สถานะ', 'Status'),
+        align: 'center',
+        render: (row) => <StatusBadge status={row.status} label={fixtureStatus(row.status)} />,
+      },
+    ],
+    [dueSelected, fixtureStatus, t],
+  )
+
   const save = async (event) => {
     event.preventDefault()
     if (!fixture) return
+    if (selected4MBlock) {
+      const message = block4MMessage(selected4MBlock, t)
+      setBlocked4MMessage(message)
+      toast.error(message)
+      return
+    }
     setBusy(true)
     try {
       const payload = {
@@ -490,6 +650,7 @@ export default function EditFixturePage({ user }) {
       }
       const data = await api.updateFixture(fixture.sn, payload)
       const savedForm = formFromFixture(data.fixture)
+      setBlocked4MMessage('')
       setFixture(data.fixture)
       setForm(savedForm)
       setOriginalForm(savedForm)
@@ -499,14 +660,52 @@ export default function EditFixturePage({ user }) {
       )
       await Promise.all([fetchFixtures(filters), loadFieldOptions()])
     } catch (err) {
-      toast.error(sm(err.message))
+      handleActionError(err)
     } finally {
       setBusy(false)
     }
   }
 
+  const saveDueDates = async () => {
+    const sns = [...dueSelected]
+    if (!sns.length) {
+      toast.error(t('กรุณาเลือก Fixture ก่อน', 'Select at least one fixture first'))
+      return
+    }
+    if (!bulkExp) {
+      toast.error(t('กรุณาเลือก Exp (PM Due)', 'Please pick an exp (PM due) date'))
+      return
+    }
+    if (bulk4MBlocks.length > 0) {
+      const message = block4MMessage(bulk4MBlocks[0], t)
+      setBlocked4MMessage(message)
+      toast.error(message)
+      return
+    }
+    setBulkBusy(true)
+    try {
+      const res = await api.updateFixtureExpBulk({ sns, exp: bulkExp, user })
+      setBlocked4MMessage('')
+      toast.success(
+        res?.message ? sm(res.message) : t(`อัปเดต Exp ${sns.length} Fixture แล้ว`, `Updated exp for ${sns.length} fixtures`),
+      )
+      setDueSelected(new Set())
+      await Promise.all([fetchDueFixtures(dueFilters), fetchFixtures(filters), loadFieldOptions()])
+    } catch (err) {
+      handleActionError(err)
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
   const askDelete = () => {
     if (!fixture) return
+    if (selected4MBlock) {
+      const message = block4MMessage(selected4MBlock, t)
+      setBlocked4MMessage(message)
+      toast.error(message)
+      return
+    }
     setConfirm({
       title: t(`ลบ ${fixture.sn}`, `Delete ${fixture.sn}`),
       message: t(
@@ -519,12 +718,13 @@ export default function EditFixturePage({ user }) {
         setBusy(true)
         try {
           await api.deleteFixture(fixture.sn, user)
+          setBlocked4MMessage('')
           toast.success(t(`ลบ ${fixture.sn} แล้ว`, `Deleted ${fixture.sn}`))
           setConfirm(null)
           clearSelection()
           await Promise.all([fetchFixtures(filters), loadFieldOptions()])
         } catch (err) {
-          toast.error(sm(err.message))
+          handleActionError(err)
         } finally {
           setBusy(false)
         }
@@ -654,6 +854,43 @@ export default function EditFixturePage({ user }) {
     },
   ]
 
+  const renderFilterCard = ({ values, fields, onFilter, onSearch, onClear, loading, error, note }) => (
+    <Card className="p-4 sm:p-5 lg:h-[500px]">
+      <SectionHeader
+        icon={SlidersHorizontal}
+        title={t('กรองข้อมูล Fixture', 'Filter fixtures')}
+        desc={t('ทุกช่องเป็น dropdown ที่มีข้อมูลจาก fixtureDetail — SN ค้นหาได้จากตาราง', 'Every field is a populated dropdown — find SN in the result table')}
+        className="mb-4"
+      />
+      <div className="grid gap-3 sm:grid-cols-2">
+        {fields.map((field) => (
+          <FormField key={field.key} label={field.label}>
+            <SearchableSelect
+              size="sm"
+              value={values[field.key]}
+              onChange={(value) => onFilter(field.key, value)}
+              options={field.options}
+              placeholder={t('ทั้งหมด', 'All')}
+              clearable
+            />
+          </FormField>
+        ))}
+      </div>
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Button icon={Search} onClick={onSearch} disabled={loading}>
+            {loading ? t('กำลังค้นหา…', 'Searching…') : t('Search', 'Search')}
+          </Button>
+          <Button variant="secondary" icon={RotateCcw} onClick={onClear} disabled={loading}>
+            {t('ล้างตัวกรอง', 'Clear filters')}
+          </Button>
+        </div>
+        <p className="text-[10px] font-semibold text-slate-400">{note}</p>
+      </div>
+      {error ? <p className="mt-3 text-[11px] font-semibold text-red-600">{error}</p> : null}
+    </Card>
+  )
+
   return (
     <div className="space-y-5">
       <PageHeader
@@ -670,58 +907,48 @@ export default function EditFixturePage({ user }) {
           tabs={[
             { value: 'fixture', label: t('Fixture', 'Fixture'), icon: Boxes },
             { value: 'storage', label: t('ตำแหน่งเก็บ', 'Storage'), icon: Database },
+            { value: 'due', label: t('Due Date', 'Due Date'), icon: CalendarClock },
           ]}
         />
         <span className="text-[11px] font-semibold text-slate-400">
           {activeTab === 'fixture'
             ? t(`${results.length.toLocaleString()} Fixture`, `${results.length.toLocaleString()} fixtures`)
-            : t(`${storages.length.toLocaleString()} ตำแหน่งเก็บ`, `${storages.length.toLocaleString()} storage locations`)}
+            : activeTab === 'storage'
+              ? t(`${storages.length.toLocaleString()} ตำแหน่งเก็บ`, `${storages.length.toLocaleString()} storage locations`)
+              : t(`${dueResults.length.toLocaleString()} Fixture · เลือก ${dueSelected.size}`, `${dueResults.length.toLocaleString()} fixtures · ${dueSelected.size} selected`)}
         </span>
       </div>
+
+      {active4MMessage ? (
+        <div role="alert" className="flex flex-wrap items-start gap-3 rounded-2xl border border-red-300 bg-red-50 p-4 shadow-sm">
+          <TriangleAlert className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="text-[12px] font-black leading-relaxed text-red-800">{active4MMessage}</p>
+            <p className="text-[11px] font-semibold leading-relaxed text-red-600">
+              {t(
+                'การแก้ไข / ลบ / อัปเดต Exp ถูกบล็อก — กรุณาแนบเอกสาร 4M ในหน้า PM สำหรับ Line นี้ แล้วลองใหม่อีกครั้ง',
+                'Edit / delete / exp update is blocked — attach the 4M document in the PM page for this line, then try again',
+              )}
+            </p>
+          </div>
+        </div>
+      ) : null}
 
       {activeTab === 'fixture' ? (
         <div className="space-y-5">
           {/* 1 + 2. Filter zone and Fixture List-style result table sit side by side */}
           <div className="grid items-stretch gap-4 lg:grid-cols-[minmax(320px,400px)_minmax(0,1fr)]">
             {/* 1. Filter zone — same fixed height as the result zone */}
-            <Card className="p-4 sm:p-5 lg:h-[500px]">
-              <SectionHeader
-                icon={SlidersHorizontal}
-                title={t('กรองข้อมูล Fixture', 'Filter fixtures')}
-                desc={t('ทุกช่องเป็น dropdown ที่มีข้อมูลจาก fixtureDetail — SN ค้นหาได้จากตาราง', 'Every field is a populated dropdown — find SN in the result table')}
-                className="mb-4"
-              />
-              <div className="grid gap-3 sm:grid-cols-2">
-                {filterFields.map((field) => (
-                  <FormField key={field.key} label={field.label}>
-                    <SearchableSelect
-                      size="sm"
-                      value={filters[field.key]}
-                      onChange={(value) => setFilter(field.key, value)}
-                      options={field.options}
-                      placeholder={t('ทั้งหมด', 'All')}
-                      clearable
-                    />
-                  </FormField>
-                ))}
-              </div>
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap gap-2">
-                  <Button icon={Search} onClick={runSearch} disabled={resultsLoading}>
-                    {resultsLoading ? t('กำลังค้นหา…', 'Searching…') : t('Search', 'Search')}
-                  </Button>
-                  <Button variant="secondary" icon={RotateCcw} onClick={clearFilters} disabled={resultsLoading}>
-                    {t('ล้างตัวกรอง', 'Clear filters')}
-                  </Button>
-                </div>
-                <p className="text-[10px] font-semibold text-slate-400">
-                  {t('อ้างอิง fixtureDetail (Line/Model รวม FAN2)', 'Sourced from fixtureDetail (Line/Model include FAN2)')}
-                </p>
-              </div>
-              {resultsError ? (
-                <p className="mt-3 text-[11px] font-semibold text-red-600">{resultsError}</p>
-              ) : null}
-            </Card>
+            {renderFilterCard({
+              values: filters,
+              fields: filterFields,
+              onFilter: setFilter,
+              onSearch: runSearch,
+              onClear: clearFilters,
+              loading: resultsLoading,
+              error: resultsError,
+              note: t('อ้างอิง fixtureDetail (Line/Model รวม FAN2)', 'Sourced from fixtureDetail (Line/Model include FAN2)'),
+            })}
 
             {/* 2. Result table only — same flat columns as Fixture List > Fixture, capped to filter height */}
             <Card className="flex min-w-0 flex-col overflow-hidden lg:h-[500px]">
@@ -826,7 +1053,14 @@ export default function EditFixturePage({ user }) {
                   <p className="mt-1 text-[10px] leading-relaxed text-red-600">
                     {t('ลบ Fixture ออกจากระบบ (บันทึก History) — ไม่สามารถย้อนกลับได้', 'Delete the fixture from the system (recorded in history) — this cannot be undone')}
                   </p>
-                  <Button variant="danger" size="sm" icon={Trash2} className="mt-3" onClick={askDelete} disabled={busy}>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    icon={Trash2}
+                    className="mt-3"
+                    onClick={askDelete}
+                    disabled={busy || Boolean(selected4MBlock)}
+                  >
                     {t('ลบ Fixture นี้', 'Delete this fixture')}
                   </Button>
                 </div>
@@ -1002,7 +1236,11 @@ export default function EditFixturePage({ user }) {
                   </div>
 
                   <div className="mt-auto flex flex-wrap gap-2.5 border-t border-slate-100 pt-5">
-                    <Button type="submit" icon={Save} disabled={busy || dirtyFields.size === 0}>
+                    <Button
+                      type="submit"
+                      icon={Save}
+                      disabled={busy || dirtyFields.size === 0 || Boolean(selected4MBlock)}
+                    >
                       {busy ? t('กำลังบันทึก…', 'Saving…') : t('บันทึกการเปลี่ยนแปลง', 'Save changes')}
                     </Button>
                     <Button
@@ -1020,7 +1258,7 @@ export default function EditFixturePage({ user }) {
             </div>
           )}
         </div>
-      ) : (
+      ) : activeTab === 'storage' ? (
         <div className="space-y-4">
           <Card className="p-4 sm:p-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1074,6 +1312,90 @@ export default function EditFixturePage({ user }) {
                 }
               />
             )}
+          </Card>
+        </div>
+      ) : (
+        <div className="space-y-5">
+          <div className="grid items-stretch gap-4 lg:grid-cols-[minmax(320px,400px)_minmax(0,1fr)]">
+            {renderFilterCard({
+              values: dueFilters,
+              fields: dueFilterFields,
+              onFilter: setDueFilter,
+              onSearch: runDueSearch,
+              onClear: clearDueFilters,
+              loading: dueResultsLoading,
+              error: dueResultsError,
+              note: t('เลือก Fixture ในตาราง แล้วกำหนด Exp ร่วมกันด้านล่าง', 'Check fixtures in the table, then set one shared exp date below'),
+            })}
+            <Card className="flex min-w-0 flex-col overflow-hidden lg:h-[500px]">
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                {dueResultsLoading ? (
+                  <Spinner label={t('กำลังโหลดข้อมูล Fixture…', 'Loading fixture data…')} />
+                ) : (
+                  <DataTable
+                    columns={dueResultColumns}
+                    rows={dueResults}
+                    rowKey={(row) => row.sn}
+                    onRowClick={(row) =>
+                      setDueSelected((current) => {
+                        const next = new Set(current)
+                        if (next.has(row.sn)) next.delete(row.sn)
+                        else next.add(row.sn)
+                        return next
+                      })
+                    }
+                    pageSize={50}
+                    dense
+                    embedded
+                    emptyIcon={CalendarClock}
+                    emptyTitle={t('ไม่พบ Fixture ตามเงื่อนไข', 'No fixtures match the filters')}
+                    emptyDescription={t('ลองปรับตัวกรองแล้วกด Search อีกครั้ง', 'Try adjusting the filters and search again')}
+                  />
+                )}
+              </div>
+            </Card>
+          </div>
+
+          <Card className="p-4 sm:p-5">
+            <SectionHeader
+              icon={CalendarClock}
+              title={t('อัปเดต Exp (PM Due)', 'Update exp (PM due)')}
+              desc={t('วันที่เดียวจะถูกใช้กับทุก Fixture ที่ติ๊กเลือก', 'One date will be applied to every checked fixture')}
+              className="mb-4"
+            />
+            <div className="flex flex-wrap items-end gap-3">
+              <FormField label={t('Exp (PM Due)', 'Exp (PM Due)')} className="w-52">
+                <Input type="date" value={bulkExp} onChange={(event) => setBulkExp(event.target.value)} />
+              </FormField>
+              <Button
+                icon={Save}
+                onClick={saveDueDates}
+                disabled={bulkBusy || !dueSelected.size || !bulkExp || bulk4MBlocks.length > 0}
+              >
+                {bulkBusy ? t('กำลังบันทึก…', 'Saving…') : t('อัปเดต Exp ที่เลือก', 'Update selected exp')}
+              </Button>
+              <div className="ml-auto flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-500">
+                <span>
+                  {t(`เลือก ${dueSelected.size} / ${dueResults.length}`, `Selected ${dueSelected.size} / ${dueResults.length}`)}
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setDueSelected(new Set(dueResults.map((row) => row.sn)))}
+                  disabled={!dueResults.length}
+                >
+                  {t('เลือกทั้งหมด', 'Select all')}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setDueSelected(new Set())}
+                  disabled={!dueSelected.size}
+                >
+                  {t('ล้างการเลือก', 'Clear selection')}
+                </Button>
+              </div>
+            </div>
           </Card>
         </div>
       )}

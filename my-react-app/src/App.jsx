@@ -6,7 +6,6 @@ import { ALL_NAV_ITEMS, DEFAULT_PAGE } from './lib/navigation'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import RequestPage from './pages/RequestPage'
-import ReturnPage from './pages/ReturnPage'
 import OrderPage from './pages/OrderPage'
 import FixtureListPage from './pages/FixtureListPage'
 import PMPage from './pages/PMPage'
@@ -101,7 +100,6 @@ export default function App() {
   const pages = {
     dashboard: DashboardPage,
     request: RequestPage,
-    return: ReturnPage,
     order: OrderPage,
     fixtures: FixtureListPage,
     pm: PMPage,
