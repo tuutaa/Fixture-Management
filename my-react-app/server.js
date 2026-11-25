@@ -214,6 +214,8 @@ const requestSchema = new mongoose.Schema(
     line: { type: String, index: true },
     currentModel: String,
     changeModel: String,
+    changeBy: { type: String, default: 'line' },
+    machine: { type: String, default: '' },
     type: { type: String, index: true },
     requestType: String, // Process Type (Mainline/Rotor/Winding/Function)
     step: String,
@@ -1690,6 +1692,8 @@ app.post(
     const line = text(body.line)
     const currentModel = text(body.currentModel || body.model)
     const changeModel = text(body.changeModel || body.modelTo)
+    const changeBy = type === 'Change Model' && text(body.changeBy) === 'machine' ? 'machine' : 'line'
+    const machine = text(body.machine)
     const queueDate = text(body.queueDate) || todayInput()
     const queueSlot = text(body.queueSlot)
 
@@ -1699,9 +1703,13 @@ app.post(
     if (!['Change Model', 'Breakdown'].includes(type)) {
       return res.status(400).json({ success: false, message: 'ประเภทคำขอไม่ถูกต้อง' })
     }
+    if (type === 'Change Model' && changeBy === 'machine' && !machine) {
+      return res.status(400).json({ success: false, message: 'กรุณาเลือกเครื่องจักร (Machine)' })
+    }
 
-    /* A Change Model request reserves one global 1-hour prep slot for the day. */
-    if (type === 'Change Model') {
+    /* A line-based Change Model request reserves one global 1-hour prep slot
+     * for the day. Machine-based changes are scheduled at the machine instead. */
+    if (type === 'Change Model' && changeBy === 'line') {
       if (!validDate(queueDate) || !CHANGE_MODEL_SLOTS.includes(queueSlot)) {
         return res.status(400).json({ success: false, message: 'กรุณาเลือกวันที่และคิว Change Model (07:00–16:00)' })
       }
@@ -1750,11 +1758,12 @@ app.post(
         line,
         currentModel,
         changeModel,
+        ...(changeBy === 'machine' ? { machine } : {}),
       }).lean()
       if (duplicate) {
         return res.status(409).json({
           success: false,
-          message: `มีคำขอ ${duplicate.request_id} ที่ยังดำเนินการอยู่สำหรับ ${type} ${line} · ${currentModel} → ${changeModel}`,
+          message: `มีคำขอ ${duplicate.request_id} ที่ยังดำเนินการอยู่สำหรับ ${type} ${line}${changeBy === 'machine' ? ` · ${machine}` : ''} · ${currentModel} → ${changeModel}`,
           duplicate,
         })
       }
@@ -1766,15 +1775,19 @@ app.post(
     })
     const request_id = `REQ${stamp}${String(todayCount + 1).padStart(3, '0')}`
 
-    const desc = text(body.desc) || (isModelSwap(type) && changeModel ? `${currentModel} → ${changeModel}` : '')
+    const desc = text(body.desc) || (isModelSwap(type) && changeModel
+      ? `${changeBy === 'machine' && machine ? `${machine} · ` : ''}${currentModel} → ${changeModel}`
+      : '')
 
     const request = await Request.create({
       request_id,
       line,
       currentModel: currentModel || '',
       changeModel: changeModel || '',
-      queueDate: type === 'Change Model' ? queueDate : undefined,
-      queueSlot: type === 'Change Model' ? queueSlot : undefined,
+      changeBy: type === 'Change Model' ? changeBy : '',
+      machine: type === 'Change Model' && changeBy === 'machine' ? machine : '',
+      queueDate: type === 'Change Model' && changeBy === 'line' ? queueDate : undefined,
+      queueSlot: type === 'Change Model' && changeBy === 'line' ? queueSlot : undefined,
       requestType: text(body.requestType),
       step: text(body.step),
       dueDate: text(body.dueDate),
@@ -1795,7 +1808,7 @@ app.post(
       {
         request_id,
         action: 'Request',
-        detail: `${type}${currentModel ? ` · ${currentModel}` : ''}`,
+        detail: `${type}${changeBy === 'machine' && machine ? ` · ${machine}` : ''}${currentModel ? ` · ${currentModel}` : ''}`,
         line,
         model: currentModel,
       },
@@ -3311,7 +3324,7 @@ app.get(
       }))
 
     const [requests, recentRequests, recentHistory, historyCount] = await Promise.all([
-      Request.find({}, 'status type requestType line currentModel changeModel step dueDate queueDate queueSlot request_id').lean(),
+      Request.find({}, 'status type requestType line currentModel changeModel changeBy machine step dueDate queueDate queueSlot request_id').lean(),
       Request.find({}).sort({ _id: -1 }).lean(),
       History.find({}).sort({ date: -1 }).limit(20).lean(),
       History.countDocuments(),

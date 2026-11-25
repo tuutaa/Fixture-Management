@@ -4,7 +4,7 @@ import AuthCard, { authButton, authIcon, authInput, authLabel } from '../compone
 import { useToast } from '../components/ui/Toast'
 import { useLanguage } from '../context/LanguageContext'
 import { useServerMessage } from '../lib/i18n'
-import api from '../lib/api'
+import api, { IS_MOCK } from '../lib/api'
 import { SESSION } from '../lib/constants'
 
 export default function LoginPage({ onLogin }) {
@@ -106,6 +106,15 @@ export default function LoginPage({ onLogin }) {
           <p className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[11px] font-semibold text-red-700">
             {error}
           </p>
+        ) : null}
+
+        {isLogin && IS_MOCK ? (
+          <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-[11px] font-semibold leading-relaxed text-blue-700">
+            {t(
+              'โหมด Mock data — เข้าใช้งานด้วย admin / admin หรือ 10001 / 1234',
+              'Mock data mode — sign in with admin / admin or 10001 / 1234',
+            )}
+          </div>
         ) : null}
 
         <form onSubmit={isLogin ? submitLogin : submitRegister} className="space-y-4" noValidate>

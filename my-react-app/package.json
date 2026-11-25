@@ -8,6 +8,7 @@
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "server": "node server.js",
     "client": "vite --host --port 8000",
+    "dev:mock": "vite --mode mock --host --port 8000",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",

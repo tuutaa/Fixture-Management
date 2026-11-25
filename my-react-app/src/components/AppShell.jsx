@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { LogOut, Menu, Wrench, X } from 'lucide-react'
 import { cn, initials } from '../lib/format'
+import { IS_MOCK } from '../lib/api'
 import { ALL_NAV_ITEMS, isAdminUser, isPageAllowed, NAV_GROUPS } from '../lib/navigation'
 import { useLanguage } from '../context/LanguageContext'
 import LanguageSwitcher from './LanguageSwitcher'
@@ -52,6 +53,11 @@ export default function AppShell({ user, page, onNavigate, onLogout, children })
             <p className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-blue-600">
               {t('FAN2 · ระบบ Fixture MM', 'FAN2 · Fixture MM')}
             </p>
+            {IS_MOCK ? (
+              <span className="mt-1 inline-flex items-center rounded-md bg-amber-100 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-amber-700">
+                Mock data
+              </span>
+            ) : null}
           </div>
           <button
             type="button"

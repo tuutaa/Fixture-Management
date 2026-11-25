@@ -1,5 +1,8 @@
 const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '')
 
+/** Demo mode: every call is served by the in-memory mock layer. */
+export const IS_MOCK = String(import.meta.env.VITE_MOCK || '').toLowerCase() === 'true'
+
 class ApiError extends Error {
   constructor(message, status, payload) {
     super(message)
@@ -10,6 +13,11 @@ class ApiError extends Error {
 }
 
 async function request(path, { method = 'GET', body, headers, signal } = {}) {
+  if (IS_MOCK) {
+    const { mockRequest } = await import('./mockApi.js')
+    return mockRequest(path, { method, body, signal })
+  }
+
   const options = {
     method,
     signal,
@@ -192,6 +200,10 @@ export const api = {
     request('/pm/extend', { method: 'POST', body: { sn, days, user, formUrl } }),
   pmAssign: (sn, payload = {}) => request('/pm/assign', { method: 'POST', body: { sn, ...payload } }),
   pmUpload: async (sn, file, user) => {
+    if (IS_MOCK) {
+      const { mockPmUpload } = await import('./mockApi.js')
+      return mockPmUpload(sn, file, user)
+    }
     const form = new FormData()
     form.append('sn', sn)
     if (user) form.append('user', JSON.stringify(user))
@@ -204,6 +216,10 @@ export const api = {
     return payload
   },
   pmUploadGroup: async (line, model, file, days, user) => {
+    if (IS_MOCK) {
+      const { mockPmUploadGroup } = await import('./mockApi.js')
+      return mockPmUploadGroup(line, model, file, days, user)
+    }
     const form = new FormData()
     form.append('line', line)
     form.append('model', model)

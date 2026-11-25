@@ -132,6 +132,10 @@ export default function PMPage({ user }) {
   const toast = useToast()
   const isAdmin = isAdminUser(user)
 
+  /* ---- Page layout ---- */
+  const [activeTab, setActiveTab] = useState('pm')
+  const [showCalendar, setShowCalendar] = useState(true)
+
   /* ---- PM worklist ---- */
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
@@ -409,6 +413,22 @@ export default function PMPage({ user }) {
   const shiftMonth = (offset) =>
     setViewMonth((current) => new Date(current.getFullYear(), current.getMonth() + offset, 1))
 
+  const goToPmActions = () => {
+    setActiveTab('pm')
+    window.setTimeout(
+      () => document.getElementById('pm-actions')?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+      80,
+    )
+  }
+
+  const goToVerify = () => {
+    setActiveTab('maintenance')
+    window.setTimeout(
+      () => document.getElementById('pm-verify')?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+      80,
+    )
+  }
+
   const openGroupPlanFor = (line, model) => {
     const lineKey = groupValueOf(line)
     const modelKey = groupValueOf(model)
@@ -457,6 +477,7 @@ export default function PMPage({ user }) {
   }
 
   const focusCalendarLine = (line) => {
+    setActiveTab('pm')
     setLineFilter(groupValueOf(line))
     setModelFilter('')
     setQuery('')
@@ -724,8 +745,8 @@ export default function PMPage({ user }) {
         icon={Wrench}
         title={t('PM และซ่อมบำรุง', 'PM & Maintenance')}
         description={t(
-          'ดู KPI → ปฏิทิน → งานที่ต้องทำ ตามลำดับนี้จบได้ในหน้าเดียว',
-          'KPI → calendar → today’s actions, in that order, on one page',
+          'แยกงานเป็น 2 ส่วนชัดเจน: งาน PM กับตรวจรับงานซ่อม — เลือกแท็บแล้วทำตามลำดับบนลงล่าง',
+          'Two clear workspaces: PM and repair verification — pick a tab, then work top to bottom',
         )}
         actions={
           <Button variant="secondary" icon={RefreshCw} onClick={load}>
@@ -734,37 +755,116 @@ export default function PMPage({ user }) {
         }
       />
 
-      {/* ---------- KPI first ---------- */}
-      <section aria-label={t('ตัวชี้วัด PM', 'PM KPIs')} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard
-          label={t('ติด 4M', 'Blocked by 4M')}
-          value={kpis.blocked}
-          hint={t('เฉพาะที่มี Line + Model', 'Only grouped fixtures')}
-          icon={AlertTriangle}
-          tone="red"
-        />
-        <StatCard
-          label={t('รอ Admin อนุมัติ', 'Awaiting Admin')}
-          value={kpis.pending}
-          hint={t('PM เกิน 7 วัน', 'PM over 7 days')}
-          icon={ShieldCheck}
-          tone="amber"
-        />
-        <StatCard
-          label={t('พร้อมเริ่ม PM', 'Ready to start PM')}
-          value={kpis.ready}
-          hint={t(`${kpis.overdue} ตัวเกินกำหนด PM`, `${kpis.overdue} overdue fixture(s)`)}
-          icon={CalendarClock}
-          tone="purple"
-        />
-        <StatCard
-          label={t('รอ Verify', 'Awaiting Verify')}
-          value={kpis.verify}
-          hint={t('อยู่ในคิว Maintenance', 'In the maintenance queue')}
-          icon={ClipboardList}
-          tone="emerald"
-        />
-      </section>
+      {/* ---------- Clear workspace switcher ---------- */}
+      <nav
+        aria-label={t('เลือกพื้นที่ทำงาน', 'Choose workspace')}
+        className="flex flex-col gap-1.5 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm sm:flex-row"
+      >
+        <button
+          type="button"
+          aria-pressed={activeTab === 'pm'}
+          onClick={() => setActiveTab('pm')}
+          className={cn(
+            'flex min-w-0 flex-1 items-center gap-3 rounded-xl px-3.5 py-3 text-left transition-all',
+            activeTab === 'pm'
+              ? 'bg-blue-600 text-white shadow-lg shadow-blue-200'
+              : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900',
+          )}
+        >
+          <span className={cn(
+            'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl',
+            activeTab === 'pm' ? 'bg-white/15 text-white' : 'bg-blue-50 text-blue-600',
+          )}>
+            <CalendarClock className="h-5 w-5" strokeWidth={2.2} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-black">{t('งาน PM', 'PM work')}</span>
+            <span className={cn(
+              'mt-0.5 block truncate text-[11px] font-semibold',
+              activeTab === 'pm' ? 'text-blue-100' : 'text-slate-400',
+            )}>
+              {t('แนบ 4M → อนุมัติ → เริ่ม PM', 'Attach 4M → approve → start PM')}
+            </span>
+          </span>
+          <span className={cn(
+            'rounded-lg px-2 py-1 font-mono text-[11px] font-black',
+            activeTab === 'pm' ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-600',
+          )}>
+            {kpis.blocked + kpis.pending + kpis.ready}
+          </span>
+        </button>
+        <button
+          type="button"
+          aria-pressed={activeTab === 'maintenance'}
+          onClick={() => setActiveTab('maintenance')}
+          className={cn(
+            'flex min-w-0 flex-1 items-center gap-3 rounded-xl px-3.5 py-3 text-left transition-all',
+            activeTab === 'maintenance'
+              ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-200'
+              : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900',
+          )}
+        >
+          <span className={cn(
+            'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl',
+            activeTab === 'maintenance' ? 'bg-white/15 text-white' : 'bg-emerald-50 text-emerald-600',
+          )}>
+            <ShieldCheck className="h-5 w-5" strokeWidth={2.2} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-black">{t('ตรวจรับงานซ่อม', 'Verify repairs')}</span>
+            <span className={cn(
+              'mt-0.5 block truncate text-[11px] font-semibold',
+              activeTab === 'maintenance' ? 'text-emerald-100' : 'text-slate-400',
+            )}>
+              {t('เลือก Fixture → Done หรือ NG', 'Select fixtures → Done or NG')}
+            </span>
+          </span>
+          <span className={cn(
+            'rounded-lg px-2 py-1 font-mono text-[11px] font-black',
+            activeTab === 'maintenance' ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-600',
+          )}>
+            {kpis.verify}
+          </span>
+        </button>
+      </nav>
+
+      {activeTab === 'pm' ? (
+        <>
+          {/* ---------- KPI first ---------- */}
+          <section aria-label={t('ตัวชี้วัด PM', 'PM KPIs')} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <StatCard
+              label={t('ติด 4M', 'Blocked by 4M')}
+              value={kpis.blocked}
+              hint={t('กดเพื่อดูงานที่ต้องทำ', 'Tap to see today’s work')}
+              icon={AlertTriangle}
+              tone="red"
+              onClick={goToPmActions}
+            />
+            <StatCard
+              label={t('รอ Admin อนุมัติ', 'Awaiting Admin')}
+              value={kpis.pending}
+              hint={t('PM เกิน 7 วัน', 'PM over 7 days')}
+              icon={ShieldCheck}
+              tone="amber"
+              onClick={goToPmActions}
+            />
+            <StatCard
+              label={t('พร้อมเริ่ม PM', 'Ready to start PM')}
+              value={kpis.ready}
+              hint={t(`${kpis.overdue} ตัวเกินกำหนด PM`, `${kpis.overdue} overdue fixture(s)`)}
+              icon={CalendarClock}
+              tone="purple"
+              onClick={goToPmActions}
+            />
+            <StatCard
+              label={t('รอ Verify', 'Awaiting Verify')}
+              value={kpis.verify}
+              hint={t('กดไปหน้าตรวจรับ', 'Tap to open verification')}
+              icon={ClipboardList}
+              tone="emerald"
+              onClick={goToVerify}
+            />
+          </section>
 
       {/* ---------- Compact calendar, always visible ---------- */}
       <section id="pm-calendar" className="scroll-mt-4">
@@ -772,7 +872,22 @@ export default function PMPage({ user }) {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <CalendarDays className="h-4 w-4 text-blue-600" />
-              <p className="text-[13px] font-black text-slate-800">{t('ปฏิทิน PM', 'PM calendar')}</p>
+              <div className="min-w-0">
+                <p className="text-[13px] font-black text-slate-800">{t('ปฏิทิน PM', 'PM calendar')}</p>
+                <p className="text-[10px] font-semibold text-slate-400">
+                  {t('กดวันที่มี Line เพื่อดู Fixture', 'Tap a line chip to inspect its fixtures')}
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={ChevronDown}
+                onClick={() => setShowCalendar((value) => !value)}
+                className={cn(showCalendar && 'rotate-180')}
+                aria-label={showCalendar
+                  ? t('ซ่อนปฏิทิน', 'Hide calendar')
+                  : t('แสดงปฏิทิน', 'Show calendar')}
+              />
             </div>
             <div className="flex items-center gap-0.5">
               <Button
@@ -794,14 +909,16 @@ export default function PMPage({ user }) {
               />
             </div>
           </div>
-          <div className="mt-2 flex flex-wrap gap-1">
-            {[...CALENDAR_STATES, 'planned'].map((state) => (
-              <Badge key={state} tone={PM_TONE[state]} dot>
-                {stateLabel(state)}
-              </Badge>
-            ))}
-          </div>
-          {loading ? (
+          {showCalendar ? (
+            <>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {[...CALENDAR_STATES, 'planned'].map((state) => (
+                  <Badge key={state} tone={PM_TONE[state]} dot>
+                    {stateLabel(state)}
+                  </Badge>
+                ))}
+              </div>
+              {loading ? (
             <Spinner label={t('กำลังโหลดปฏิทิน…', 'Loading calendar…')} />
           ) : error ? (
             <ErrorState message={sm(error)} onRetry={load} />
@@ -854,7 +971,9 @@ export default function PMPage({ user }) {
                 )
               })}
             </div>
-          )}
+            )}
+            </>
+          ) : null}
         </Card>
       </section>
 
@@ -869,7 +988,7 @@ export default function PMPage({ user }) {
               <div className="min-w-0">
                 <h2 className="text-[15px] font-black text-slate-900">{t('งานที่ต้องทำตอนนี้', 'Do this now')}</h2>
                 <p className="mt-0.5 text-[11px] font-medium text-slate-500">
-                  {t('ทำตามลำดับบนลงล่าง เสร็จอันบนก่อนค่อยไปอันล่าง', 'Work top to bottom — finish the first block first')}
+                  {t('ทำตามขั้น 1 → 2 → 3 บนลงล่าง (Verify อยู่แท็บอื่น)', 'Work steps 1 → 2 → 3 top to bottom (Verify is in the other tab)')}
                 </p>
               </div>
             </div>
@@ -878,19 +997,13 @@ export default function PMPage({ user }) {
                 <span className="h-2 w-2 rounded-full bg-red-500" />
                 {t(`ติด 4M ${kpis.blocked} ตัว`, `${kpis.blocked} blocked by 4M`)}
               </span>
-              {kpis.pending > 0 ? (
-                <span className="flex items-center gap-1.5 text-amber-600">
-                  <span className="h-2 w-2 rounded-full bg-amber-500" />
-                  {t(`รอ Admin ${kpis.pending} ตัว`, `${kpis.pending} awaiting Admin`)}
-                </span>
-              ) : null}
+              <span className="flex items-center gap-1.5 text-amber-600">
+                <span className="h-2 w-2 rounded-full bg-amber-500" />
+                {t(`รอ Admin ${kpis.pending} ตัว`, `${kpis.pending} awaiting Admin`)}
+              </span>
               <span className="flex items-center gap-1.5 text-purple-600">
                 <span className="h-2 w-2 rounded-full bg-purple-500" />
                 {t(`พร้อม PM ${kpis.ready} ตัว`, `${kpis.ready} ready to start PM`)}
-              </span>
-              <span className="flex items-center gap-1.5 text-emerald-600">
-                <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                {t(`รอ Verify ${kpis.verify} ตัว`, `${kpis.verify} awaiting Verify`)}
               </span>
             </div>
           </div>
@@ -904,7 +1017,8 @@ export default function PMPage({ user }) {
               {/* 4M comes first because it blocks everything else. */}
               <div className="px-4 py-3 sm:px-5">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="flex items-center gap-2 text-[12px] font-black text-red-700">
+                  <p className="flex items-center gap-2 text-[13px] font-black text-red-700">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-red-600 text-[11px] font-black text-white">1</span>
                     <AlertTriangle className="h-4 w-4" /> {t('แนบ 4M ก่อนแตะของ', 'Attach 4M before editing')}
                   </p>
                   <span className="text-[10px] font-bold text-slate-400">{t('เฉพาะที่มี Line + Model', 'Grouped fixtures only')}</span>
@@ -1025,18 +1139,24 @@ export default function PMPage({ user }) {
               </div>
 
               {/* PM over 7 days waits here for Admin before it can enter Maintenance. */}
-              {pendingGroups.length > 0 ? (
-                <div className="px-4 py-3 sm:px-5">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="flex items-center gap-2 text-[12px] font-black text-amber-700">
-                      <ShieldCheck className="h-4 w-4" /> {t('รอ Admin อนุมัติ PM เกิน 7 วัน', 'Awaiting Admin approval · PM over 7 days')}
-                    </p>
-                    <span className="text-[10px] font-bold text-slate-400">
-                      {isAdmin
-                        ? t('กดยืนยันหรือ Reject (ใส่รหัสผ่าน)', 'Approve or Reject (password required)')
-                        : t('เฉพาะ Admin ที่กดได้', 'Admin only')}
-                    </span>
-                  </div>
+              {/* PM over 7 days waits here for Admin before it can enter Maintenance. */}
+              <div className="px-4 py-3 sm:px-5">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="flex items-center gap-2 text-[13px] font-black text-amber-700">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-amber-500 text-[11px] font-black text-white">2</span>
+                    <ShieldCheck className="h-4 w-4" /> {t('รอ Admin อนุมัติ PM เกิน 7 วัน', 'Awaiting Admin approval · PM over 7 days')}
+                  </p>
+                  <span className="text-[10px] font-bold text-slate-400">
+                    {isAdmin
+                      ? t('กดยืนยันหรือ Reject (ใส่รหัสผ่าน)', 'Approve or Reject (password required)')
+                      : t('เฉพาะ Admin ที่กดได้', 'Admin only')}
+                  </span>
+                </div>
+                {pendingGroups.length === 0 ? (
+                  <p className="mt-2 text-[11px] font-semibold text-slate-400">
+                    {t('ไม่มี PM ที่รอ Admin ในขณะนี้', 'No PM is waiting for Admin right now')}
+                  </p>
+                ) : (
                   <div className="mt-2 space-y-2">
                     {pendingGroups.map((group) => (
                       <div key={group.key} className="rounded-xl border border-amber-200 bg-amber-50/60 p-3">
@@ -1080,13 +1200,14 @@ export default function PMPage({ user }) {
                       </div>
                     ))}
                   </div>
-                </div>
-              ) : null}
+                )}
+              </div>
 
               {/* Start PM is one click per Line + Model — no filter dance first. */}
               <div className="px-4 py-3 sm:px-5">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="flex items-center gap-2 text-[12px] font-black text-purple-700">
+                  <p className="flex items-center gap-2 text-[13px] font-black text-purple-700">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-purple-600 text-[11px] font-black text-white">3</span>
                     <CalendarClock className="h-4 w-4" /> {t('กำลังทำ PM ทั้งกลุ่ม', 'Start PM for whole group')}
                   </p>
                   <span className="text-[10px] font-bold text-slate-400">{t('ใส่รหัสผ่านตอนยืนยัน', 'Password to confirm')}</span>
@@ -1120,123 +1241,6 @@ export default function PMPage({ user }) {
                 )}
               </div>
 
-              {/* Verify: Line → Model, tick many, then Done / NG once. */}
-              <div className="px-4 py-3 sm:px-5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="flex items-center gap-2 text-[12px] font-black text-emerald-700">
-                    <ShieldCheck className="h-4 w-4" /> {t('ตรวจรับคิวซ่อม', 'Verify repair queue')}
-                  </p>
-                  <p className="text-[10px] font-bold text-emerald-700">
-                    {t('Done → In Stock · NG → Order', 'Done → In Stock · NG → Order')}
-                  </p>
-                  <div className="w-full sm:w-56">
-                    {searchBox(mQuery, setMQuery, t('ค้นหา SN / Line / Model…', 'Search SN / line / model…'))}
-                  </div>
-                </div>
-
-                {verifyGroups.length === 0 ? (
-                  <p className="mt-2 text-[11px] font-semibold text-slate-400">{t('ไม่มีของรอ Verify', 'Nothing awaiting Verify')}</p>
-                ) : (
-                  <div className="mt-2 space-y-2">
-                    {verifyGroups.map((lineGroup) => {
-                      const lineSelected = lineGroup.rows.every((row) => selectedVerify.has(row.sn))
-                      return (
-                        <div key={`line-${lineGroup.line}`} className="overflow-hidden rounded-xl border border-slate-200">
-                          <label className="flex items-center gap-2 bg-slate-50 px-3 py-2 text-[11px] font-black text-slate-700">
-                            <input
-                              type="checkbox"
-                              className="h-4 w-4 accent-emerald-600"
-                              checked={lineSelected}
-                              onChange={(event) => toggleVerifyRows(lineGroup.rows, event.target.checked)}
-                            />
-                            <Layers3 className="h-4 w-4 text-blue-500" />
-                            <span>{t('Line', 'Line')} {lineGroup.line}</span>
-                            <span className="ml-auto rounded-md bg-white px-2 py-0.5 font-mono text-[10px] text-slate-500 ring-1 ring-slate-200">
-                              {lineGroup.rows.length}
-                            </span>
-                          </label>
-                          <div className="divide-y divide-slate-100">
-                            {lineGroup.models.map((modelGroup) => {
-                              const modelSelected = modelGroup.rows.every((row) => selectedVerify.has(row.sn))
-                              return (
-                                <div key={`${lineGroup.line}-${modelGroup.model}`} className="px-3 py-2">
-                                  <label className="flex items-center gap-2 text-[10px] font-black text-slate-600">
-                                    <input
-                                      type="checkbox"
-                                      className="h-3.5 w-3.5 accent-emerald-600"
-                                      checked={modelSelected}
-                                      onChange={(event) => toggleVerifyRows(modelGroup.rows, event.target.checked)}
-                                    />
-                                    <span className="font-mono uppercase">{modelGroup.model}</span>
-                                    <span className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[9px] text-slate-500">
-                                      {modelGroup.rows.length}
-                                    </span>
-                                  </label>
-                                  <div className="mt-1 grid gap-1 pl-5 sm:grid-cols-2">
-                                    {modelGroup.rows.map((row) => {
-                                      const days = daysUntil(row.usage?.exp)
-                                      return (
-                                        <label
-                                          key={row.sn}
-                                          className="flex cursor-pointer items-start gap-2 rounded-lg px-1.5 py-1 hover:bg-emerald-50/60"
-                                        >
-                                          <input
-                                            type="checkbox"
-                                            className="mt-0.5 h-3.5 w-3.5 accent-emerald-600"
-                                            checked={selectedVerify.has(row.sn)}
-                                            onChange={() => toggleVerify(row.sn)}
-                                          />
-                                          <span className="min-w-0 flex-1">
-                                            <span className="block truncate font-mono text-[11px] font-black text-slate-800">{row.sn}</span>
-                                            <span className="block text-[9px] font-semibold text-slate-400">
-                                              {t('ครบกำหนด', 'Due')}: {formatDate(row.usage?.exp)}
-                                              {days === null
-                                                ? ''
-                                                : days < 0
-                                                  ? ` · ${t(`เกิน ${-days} วัน`, `${-days} days overdue`)}`
-                                                  : ` · ${t(`อีก ${days} วัน`, `${days} days left`)}`}
-                                            </span>
-                                          </span>
-                                        </label>
-                                      )
-                                    })}
-                                  </div>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50/60 px-3 py-2">
-                  <p className="text-[11px] font-black text-emerald-700">
-                    {t(`เลือกแล้ว ${selectedRows.length} ตัว`, `${selectedRows.length} selected`)}
-                  </p>
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      variant="success"
-                      icon={CheckCircle2}
-                      disabled={selectedRows.length === 0}
-                      onClick={() => openBulkVerify('OK')}
-                    >
-                      {t('Done (OK)', 'Done (OK)')}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      icon={XCircle}
-                      disabled={selectedRows.length === 0}
-                      onClick={() => openBulkVerify('NG')}
-                    >
-                      {t('NG', 'NG')}
-                    </Button>
-                  </div>
-                </div>
-              </div>
             </div>
           )}
         </Card>
@@ -1439,7 +1443,177 @@ export default function PMPage({ user }) {
             </div>
           )}
         </section>
-      ) : null}
+        ) : null}
+        </>
+      ) : (
+        <section id="pm-verify" className="scroll-mt-4">
+          <Card className="overflow-hidden">
+            <div className="border-b border-emerald-100 bg-emerald-50/50 px-4 py-4 sm:px-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-lg shadow-emerald-200">
+                    <ShieldCheck className="h-5 w-5" strokeWidth={2.2} />
+                  </span>
+                  <div className="min-w-0">
+                    <h2 className="text-base font-black text-slate-900">{t('ตรวจรับงานซ่อม', 'Verify repair queue')}</h2>
+                    <p className="mt-1 text-[12px] font-semibold text-slate-600">
+                      {t('เลือก Fixture ทีละตัวหรือทั้ง Line → กด Done (OK) หรือ NG', 'Tick fixtures or a whole line → press Done (OK) or NG')}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2 text-[11px] font-black">
+                  <span className="rounded-xl bg-white px-3 py-2 text-emerald-700 ring-1 ring-emerald-200">
+                    {t(`รอตรวจ ${mRows.length} ตัว`, `${mRows.length} awaiting Verify`)}
+                  </span>
+                  <span className="rounded-xl bg-white px-3 py-2 text-blue-700 ring-1 ring-blue-200">
+                    {t(`เลือกแล้ว ${selectedRows.length} ตัว`, `${selectedRows.length} selected`)}
+                  </span>
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <div className="min-w-[220px] flex-1">
+                  {searchBox(mQuery, setMQuery, t('ค้นหา SN / Line / Model…', 'Search SN / line / model…'))}
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon={CheckCircle2}
+                  disabled={visibleMaintenance.length === 0}
+                  onClick={() => toggleVerifyRows(visibleMaintenance, true)}
+                >
+                  {t('เลือกทั้งหมด', 'Select all')}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={selectedVerify.size === 0}
+                  onClick={() => setSelectedVerify(new Set())}
+                >
+                  {t('ล้างที่เลือก', 'Clear')}
+                </Button>
+              </div>
+            </div>
+
+            {mLoading ? (
+              <Spinner label={t('กำลังโหลดคิวซ่อม…', 'Loading repair queue…')} />
+            ) : mError ? (
+              <ErrorState message={sm(mError)} onRetry={load} />
+            ) : verifyGroups.length === 0 ? (
+              <EmptyState
+                icon={ShieldCheck}
+                title={t('ไม่มีของรอ Verify', 'Nothing awaiting Verify')}
+                description={t(
+                  'Fixture ที่เข้าซ่อมจะปรากฏที่นี่เมื่อพร้อมตรวจรับ',
+                  'Repaired fixtures appear here when they are ready to verify',
+                )}
+              />
+            ) : (
+              <>
+                <div className="max-h-[62vh] space-y-3 overflow-y-auto p-4 sm:p-5">
+                  {verifyGroups.map((lineGroup) => {
+                    const lineSelected = lineGroup.rows.every((row) => selectedVerify.has(row.sn))
+                    return (
+                      <div key={`line-${lineGroup.line}`} className="overflow-hidden rounded-2xl border border-slate-200">
+                        <label className="flex items-center gap-2.5 bg-slate-50 px-3.5 py-2.5 text-[12px] font-black text-slate-700">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 accent-emerald-600"
+                            checked={lineSelected}
+                            onChange={(event) => toggleVerifyRows(lineGroup.rows, event.target.checked)}
+                          />
+                          <Layers3 className="h-4 w-4 text-blue-500" />
+                          <span>{t('Line', 'Line')} {lineGroup.line}</span>
+                          <span className="ml-auto rounded-lg bg-white px-2 py-1 font-mono text-[11px] text-slate-500 ring-1 ring-slate-200">
+                            {lineGroup.rows.length}
+                          </span>
+                        </label>
+                        <div className="divide-y divide-slate-100">
+                          {lineGroup.models.map((modelGroup) => {
+                            const modelSelected = modelGroup.rows.every((row) => selectedVerify.has(row.sn))
+                            return (
+                              <div key={`${lineGroup.line}-${modelGroup.model}`} className="px-3.5 py-2.5">
+                                <label className="flex items-center gap-2.5 text-[11px] font-black text-slate-600">
+                                  <input
+                                    type="checkbox"
+                                    className="h-4 w-4 accent-emerald-600"
+                                    checked={modelSelected}
+                                    onChange={(event) => toggleVerifyRows(modelGroup.rows, event.target.checked)}
+                                  />
+                                  <span className="font-mono uppercase">{modelGroup.model}</span>
+                                  <span className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">
+                                    {modelGroup.rows.length}
+                                  </span>
+                                </label>
+                                <div className="mt-2 grid gap-1.5 pl-6 sm:grid-cols-2">
+                                  {modelGroup.rows.map((row) => {
+                                    const days = daysUntil(row.usage?.exp)
+                                    return (
+                                      <label
+                                        key={row.sn}
+                                        className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-transparent px-2 py-1.5 transition-colors hover:border-emerald-200 hover:bg-emerald-50/60"
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          className="mt-0.5 h-4 w-4 accent-emerald-600"
+                                          checked={selectedVerify.has(row.sn)}
+                                          onChange={() => toggleVerify(row.sn)}
+                                        />
+                                        <span className="min-w-0 flex-1">
+                                          <span className="block truncate font-mono text-[12px] font-black text-slate-800">{row.sn}</span>
+                                          <span className="mt-0.5 block text-[10px] font-semibold text-slate-400">
+                                            {t('ครบกำหนด', 'Due')}: {formatDate(row.usage?.exp)}
+                                            {days === null
+                                              ? ''
+                                              : days < 0
+                                                ? ` · ${t(`เกิน ${-days} วัน`, `${-days} days overdue`)}`
+                                                : ` · ${t(`อีก ${days} วัน`, `${days} days left`)}`}
+                                          </span>
+                                        </span>
+                                      </label>
+                                    )
+                                  })}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-2 border-t border-emerald-200 bg-white/95 px-4 py-3 backdrop-blur sm:px-5">
+                  <p className="text-[12px] font-black text-emerald-700">
+                    {t(`เลือกแล้ว ${selectedRows.length} ตัว`, `${selectedRows.length} selected`)} ·{' '}
+                    <span className="font-semibold text-slate-500">
+                      {t('Done → In Stock · NG → Order', 'Done → In Stock · NG → Order')}
+                    </span>
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="success"
+                      icon={CheckCircle2}
+                      disabled={selectedRows.length === 0}
+                      onClick={() => openBulkVerify('OK')}
+                    >
+                      {t('Done (OK)', 'Done (OK)')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      icon={XCircle}
+                      disabled={selectedRows.length === 0}
+                      onClick={() => openBulkVerify('NG')}
+                    >
+                      {t('NG', 'NG')}
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
+          </Card>
+        </section>
+      )}
 
       {/* ---------- Plan PM modal (line + model group, password required) ---------- */}
       <Modal
