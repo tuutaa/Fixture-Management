@@ -4,6 +4,7 @@ export const SESSION = {
   lastName: 'currentLastName',
   role: 'userRole',
   dept: 'currentDept',
+  status: 'currentUserStatus',
   requestId: 'currentRequestId',
 }
 
@@ -12,10 +13,26 @@ export const UI_STATE = {
   page: 'currentPage',
 }
 
+/* History is split into two sections. These lists mirror server.js so filters
+ * stay aligned with what was actually recorded. */
+export const HISTORY_SECTION_ACTIONS = {
+  order: [
+    'Register', 'Request', 'Accept', 'Hold', 'Reject', 'Complete',
+    'Issue', 'Issue (Scan)', 'Breakdown', 'Issue Spare',
+    'Verify', 'Return', 'Return (Verify)', 'Edit', 'Delete', 'Order',
+  ],
+  pm: [
+    'PM Due', '4M Document', '4M Approval Request', '4M Approve', '4M Assign',
+    'Plan PM', 'Start PM', 'PM Approve', 'PM Reject', 'PM OK', 'PM NG',
+  ],
+}
+
 /* Fixture status (fixtureDetail.status) — ตาม Flow Fixture MM */
 export const FIXTURE_STATUSES = [
   'In Stock',
   'In Use',
+  'PM',
+  'PM Pending',
   'Maintenance',
   'Scrape',
   'PR',
@@ -33,6 +50,16 @@ export const FIXTURE_STATUS_TONE = {
     label: 'In Use',
     chip: 'bg-blue-50 text-blue-700 ring-blue-600/10',
     dot: 'bg-blue-500',
+  },
+  PM: {
+    label: 'PM (รอซ่อม)',
+    chip: 'bg-purple-50 text-purple-700 ring-purple-600/10',
+    dot: 'bg-purple-500',
+  },
+  'PM Pending': {
+    label: 'PM Pending (รอ Admin)',
+    chip: 'bg-amber-50 text-amber-700 ring-amber-600/10',
+    dot: 'bg-amber-500',
   },
   Maintenance: {
     label: 'Maintenance',
@@ -95,7 +122,6 @@ export const REQUEST_STATUS_TONE = {
 /* Request type per flow: Change Model | Replace | Breakdown */
 export const REQUEST_TYPES = [
   { value: 'Change Model', label: 'เปลี่ยนรุ่น (Change Model)', hint: 'MainLine / Rotor → Compare Model A → B' },
-  { value: 'Replace', label: 'เปลี่ยน Fixture (Replace)', hint: 'เหมือนเปลี่ยนรุ่น แต่ระบุจำนวนเครื่องที่ต้องเปลี่ยน' },
   { value: 'Breakdown', label: 'Fixture เสีย (Breakdown)', hint: 'Verify → Issue Spare / PM & Maintenance' },
 ]
 
@@ -129,6 +155,8 @@ export const buildProcessTypeOptions = (values = []) => {
 export const FIXTURE_STATUS_OPTIONS = [
   { value: 'In Stock', label: 'In Stock (Instock)' },
   { value: 'In Use', label: 'In Use (Inuse)' },
+  { value: 'PM', label: 'PM (รอทำซ่อมบำรุง)' },
+  { value: 'PM Pending', label: 'PM Pending (รอ Admin อนุมัติ)' },
   { value: 'Maintenance', label: 'PM / Breakdown (Maintenance)' },
   { value: 'Scrape', label: 'Scrap (Scrape)' },
   { value: 'PR', label: 'Change Model / Need PR' },
@@ -258,7 +286,7 @@ export const ORDER_ACTIONS = [
 ]
 
 /* User status (users.status : string) */
-export const USER_STATUSES = ['Pending', 'Approved', 'Admin']
+export const USER_STATUSES = ['Unsigned', 'Signed', 'Admin']
 
 export const ROLE = {
   isAdmin: (role) => /admin/i.test(String(role || '')),

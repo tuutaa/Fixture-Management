@@ -30,15 +30,8 @@ const matchForItem = (item, matches) => matches.find((match) => {
 
 const itemMatched = (item, matches) => Boolean(matchForItem(item, matches))
 
-const isModelSwap = (request) => /change\s*model|replace/i.test(String(request?.type || ''))
-const isReplace = (request) => /replace/i.test(String(request?.type || ''))
+const isModelSwap = (request) => /change\s*model/i.test(String(request?.type || ''))
 const isBreakdown = (request) => /breakdown/i.test(String(request?.type || ''))
-
-const replaceQtyLabel = (request, t) => {
-  const qty = Number(request?.replaceQty)
-  const count = Number.isInteger(qty) && qty >= 1 ? qty : 0
-  return count ? `${t('Replace', 'Replace')} ${count} ${t('ตัว', 'pcs')}` : t('Replace', 'Replace')
-}
 
 const resolveChangeModel = (request) => {
   if (request?.changeModel) return request.changeModel
@@ -340,11 +333,6 @@ export default function OrderScanModal({ open, request, user, phase = 'issue', o
                 {isModelSwap(current) ? <ArrowRight className="h-3 w-3" /> : <Wrench className="h-3 w-3" />}
                 {requestType(current.type)}
               </span>
-              {isReplace(current) ? (
-                <span className="rounded-lg bg-violet-100 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-violet-700">
-                  {replaceQtyLabel(current, t)}
-                </span>
-              ) : null}
               <span className="text-[11px] font-bold text-slate-500">Line {current.line || '-'}</span>
               {isModelSwap(current) && current.currentModel ? (
                 <span className="font-mono text-[10px] font-bold text-slate-500">

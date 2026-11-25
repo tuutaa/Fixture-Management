@@ -70,17 +70,24 @@ export default function Modal({
   className,
   bodyClassName,
   closeOnBackdrop = true,
+  initialFocus = 'input:not([type="hidden"]), textarea, select, button:not([data-close])',
 }) {
   const panelRef = useRef(null)
+  const onCloseRef = useRef(onClose)
   const { t } = useLanguage()
+
+  useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
 
   useEffect(() => {
     if (!open) return undefined
 
+    const previouslyFocused = document.activeElement
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        onClose?.()
+        onCloseRef.current?.()
       }
       if (event.key !== 'Tab') return
       const nodes = panelRef.current?.querySelectorAll(
@@ -103,18 +110,21 @@ export default function Modal({
     document.addEventListener('keydown', onKeyDown)
 
     const timer = window.setTimeout(() => {
-      const focusable = panelRef.current?.querySelector(
-        'input, textarea, select, button:not([data-close])',
-      )
-      focusable?.focus()
+      const root = panelRef.current
+      const target = root?.querySelector(initialFocus)
+        || root?.querySelector('input:not([type="hidden"]), textarea, select, button:not([data-close])')
+      target?.focus()
     }, 40)
 
     return () => {
       document.body.style.overflow = previous
       document.removeEventListener('keydown', onKeyDown)
       window.clearTimeout(timer)
+      if (previouslyFocused instanceof HTMLElement && document.contains(previouslyFocused)) {
+        previouslyFocused.focus()
+      }
     }
-  }, [open, onClose])
+  }, [open, initialFocus])
 
   if (!open) return null
 
@@ -124,7 +134,7 @@ export default function Modal({
     <div
       className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/45 p-0 backdrop-blur-[2px] sm:items-center sm:p-6"
       onMouseDown={(event) => {
-        if (closeOnBackdrop && event.target === event.currentTarget) onClose?.()
+        if (closeOnBackdrop && event.target === event.currentTarget) onCloseRef.current?.()
       }}
     >
       <div

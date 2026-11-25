@@ -75,11 +75,12 @@ export function useLabels() {
 const MESSAGES = {
   'กรุณากรอก Emp ID และ Password': 'Please enter Emp ID and password',
   'Emp ID หรือ Password ไม่ถูกต้อง': 'Incorrect Emp ID or password',
-  'บัญชีของคุณยังไม่ได้รับการอนุมัติ กรุณาติดต่อผู้ดูแลระบบ': 'Your account is not approved yet. Please contact an administrator',
+  'บัญชีของคุณยังไม่ได้ลงนาม กรุณาติดต่อผู้ดูแลระบบ': 'Your account is not signed yet. Please contact an administrator',
   'กรุณากรอก Emp ID, ชื่อ และ Password': 'Please enter Emp ID, name and password',
   'Emp ID นี้ถูกใช้งานแล้ว': 'This Emp ID is already in use',
   'Username นี้ถูกใช้งานแล้ว': 'This username is already in use',
-  'Register Success! รอผู้ดูแลระบบอนุมัติ': 'Registration successful! Waiting for administrator approval',
+  'Register Success! รอผู้ดูแลระบบลงนาม': 'Registration successful! Waiting for administrator signature',
+  'ลงทะเบียนสำเร็จ กรุณารอการลงนามจากผู้ดูแล': 'Registration successful. Please wait for the administrator to sign your account',
   'ไม่มีข้อมูลที่ต้องการแก้ไข': 'No changes to update',
   'ไม่มีข้อมูลสำหรับ Import': 'No data to import',
   'กรุณาระบุ Storage Location': 'Please specify a storage location',
@@ -117,6 +118,11 @@ const MESSAGES = {
   'Fixture นี้อยู่ใน Stock อยู่แล้ว': 'This fixture is already in stock',
   'กรุณาระบุ SN และจำนวนวัน': 'Please specify SN and number of days',
   'PM เกิน 7 วัน ต้อง Import เอกสาร 4M ก่อนอนุมัติ': 'PM is over 7 days — import the 4M document before approval',
+  'กรุณาระบุจำนวนวันที่ต้องการทำ PM (1–365)': 'Please enter how many days of PM (1–365)',
+  'action ต้องเป็น approve หรือ reject': 'Action must be approve or reject',
+  'เฉพาะ Admin เท่านั้นที่อนุมัติ PM ได้': 'Only Admin can approve PM',
+  'Fixture นี้รอ Admin อนุมัติ PM อยู่ — ยังเริ่ม PM ไม่ได้': 'This fixture is waiting for Admin approval — PM cannot start yet',
+  'PM เกิน 7 วันต้องได้รับการอนุมัติจาก Admin ก่อน': 'PM over 7 days needs Admin approval first',
   'กรุณาเลือกไฟล์เอกสาร 4M': 'Please select the 4M document file',
   'กรุณาระบุ Line': 'Please specify a line',
   'ต้องสแกนรายการจ่ายก่อนกดตกลง': 'Scan the issue items before confirming',
@@ -130,6 +136,11 @@ const MESSAGES = {
   'result ต้องเป็น OK หรือ NG': 'Result must be OK or NG',
   'outcome ต้องเป็น Need Scrape / Need PR / Already have PR / New One Replacement':
     'Outcome must be Need Scrape / Need PR / Already have PR / New One Replacement',
+  'Fixture ที่ไม่มี Line / Model ไม่ต้องแนบเอกสาร 4M':
+    'Fixtures without line / model do not need a 4M document',
+  'กรุณาเลือก Fixture ที่ต้อง Verify': 'Please select the fixtures to verify',
+  'ไม่มี Fixture ที่ Verify ได้': 'No fixture can be verified',
+  'กรุณาเลือก Line และ Model ก่อนส่ง PM': 'Please choose a line and model before starting PM',
 }
 
 const dynamicMessage = (text) => {
@@ -178,8 +189,46 @@ const dynamicMessage = (text) => {
   if (m) return [text, `Slot ${m[1]} on ${m[2]} is already taken by ${m[3]} — please pick another slot`]
   m = text.match(/^Fixture (.+) เกินกำหนด PM (\d+) วัน — กรุณาแนบเอกสาร 4M ก่อนแก้ไขข้อมูล$/)
   if (m) return [text, `Fixture ${m[1]} is ${m[2]} days overdue — attach the 4M document before editing`]
+  m = text.match(/^ไม่มี Fixture ใน Line (.+) \/ Model (.+) ที่เกินกำหนด PM มากกว่า 3 วัน$/)
+  if (m) return [text, `No fixture in line ${m[1]} / model ${m[2]} is more than 3 days overdue`]
   m = text.match(/^ไม่มี Fixture ใน Line (.+) ที่เกินกำหนด PM มากกว่า 7 วัน$/)
   if (m) return [text, `No fixture in line ${m[1]} is more than 7 days overdue`]
+  m = text.match(/^ต้องแนบเอกสาร 4M ก่อนเริ่ม PM (\d+) ตัวใน Line (.+) \/ Model (.+)$/)
+  if (m) return [text, `${m[1]} fixture(s) need 4M before PM can start in line ${m[2]} / model ${m[3]}`]
+  m = text.match(/^ไม่มี Fixture ที่พร้อมเริ่ม PM ใน Line (.+) \/ Model (.+)$/)
+  if (m) return [text, `No fixture is ready to start PM in line ${m[1]} / model ${m[2]}`]
+  m = text.match(/^เริ่ม PM (\d+) ตัว → PM & Maintenance \((.+)\) · Line (.+) \/ Model (.+)(?: · ข้าม (\d+) ตัว)?$/)
+  if (m) return [text, `Started PM for ${m[1]} fixture(s) → PM & Maintenance (${m[2]}) · line ${m[3]} / model ${m[4]}${m[5] ? ` · skipped ${m[5]}` : ''}`]
+  m = text.match(/^แนบ 4M ให้ (\d+) ตัวแล้ว · ขอ PM (\d+) วัน — รอ Admin อนุมัติก่อนเข้าซ่อม$/)
+  if (m) return [text, `4M attached to ${m[1]} fixture(s) · ${m[2]} days of PM — awaiting Admin approval before repair`]
+  m = text.match(/^แนบ 4M ให้ (\d+) ตัวแล้ว · กำหนด PM (\d+) วัน — พร้อมกดกำลังทำ PM$/)
+  if (m) return [text, `4M attached to ${m[1]} fixture(s) · ${m[2]} days of PM — ready to start PM`]
+  m = text.match(/^(.+) อนุมัติ PM (\d+) วัน — เข้าสู่ Maintenance แล้ว$/)
+  if (m) return [text, `Approved ${m[2]} days of PM for ${m[1]} — now in Maintenance`]
+  m = text.match(/^(.+) ปฏิเสธ PM — กลับไปรอทำ PM$/)
+  if (m) return [text, `Rejected PM for ${m[1]} — back to waiting for PM`]
+  m = text.match(/^PM ผ่าน — (.+) กลับเข้า In Stock แล้ว \(รอจ่ายออกเพื่อเริ่ม PM รอบใหม่\)$/)
+  if (m) return [text, `Passed PM — ${m[1]} is back In Stock (new PM clock starts when issued)`]
+  m = text.match(/^Verify OK (\d+) ตัว — กลับเข้า In Stock แล้ว$/)
+  if (m) return [text, `Verified OK: ${m[1]} fixture(s) — back In Stock`]
+  m = text.match(/^Verify NG (\d+) ตัว — (.+)$/)
+  if (m) return [text, `Verified NG: ${m[1]} fixture(s) — ${m[2]}`]
+  m = text.match(/^Verify \+ Record OK — กลับเข้า In Stock \(รอจ่ายออกเพื่อเริ่ม PM รอบใหม่\)$/)
+  if (m) return [text, 'Verify + Record OK — back In Stock (new PM clock starts when issued)']
+  m = text.match(/^Verify \+ Record NG — (.+)$/)
+  if (m) return [text, `Verify + Record NG — ${m[1]}`]
+  m = text.match(/^Import เอกสาร 4M: (.+)$/)
+  if (m) return [text, `4M document attached: ${m[1]}`]
+  m = text.match(/^ครบกำหนด PM 90 วัน \((.+)\) → รอทำ PM$/)
+  if (m) return [text, `90-day PM due (${m[1]}) — waiting for PM`]
+  m = text.match(/^เริ่มทำ PM (.+) → PM & Maintenance · (.+)$/)
+  if (m) return [text, `PM started ${m[1]} → PM & Maintenance · ${m[2]}`]
+  m = text.match(/^(.+) → Maintenance · เริ่มทำ PM (.+)$/)
+  if (m) return [text, `${m[1]} → Maintenance · PM started ${m[2]}`]
+  m = text.match(/^(.+) ไม่ได้อยู่ในสถานะ PM \(ปัจจุบัน: (.+)\)$/)
+  if (m) return [text, `${m[1]} is not in PM status (currently: ${m[2]})`]
+  m = text.match(/^(.+) ไม่ได้รออนุมัติ PM \(ปัจจุบัน: (.+)\)$/)
+  if (m) return [text, `${m[1]} is not awaiting PM approval (currently: ${m[2]})`]
   m = text.match(/^ลงทะเบียน (.+) สำเร็จ \(Not Exist\)$/)
   if (m) return [text, `Registered ${m[1]} successfully (Not Exist)`]
   m = text.match(/^Fixture นี้ไม่ได้อยู่ใน Stock \((.+)\)$/)

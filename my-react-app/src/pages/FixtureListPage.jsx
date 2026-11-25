@@ -138,6 +138,7 @@ const normPosition = (value) =>
     .toLowerCase()
 
 const EMPTY_FILTERS = {
+  sn: '',
   line: '',
   model: '',
   status: '',
@@ -260,6 +261,7 @@ export default function FixtureListPage() {
   const clearFilters = () => {
     setFilters(EMPTY_FILTERS)
     setAppliedFilters(EMPTY_FILTERS)
+    setQuery('')
     fetchFixtureRows(EMPTY_FILTERS)
   }
 
@@ -332,6 +334,7 @@ export default function FixtureListPage() {
   }, [fetchFixtureRows])
 
   const needle = query.trim().toLowerCase()
+  const snNeedle = String(appliedFilters.sn || '').trim().toLowerCase()
 
   const allFixtures = useMemo(() => {
     if (!details.length) return flat
@@ -411,6 +414,7 @@ export default function FixtureListPage() {
 
         for (const sn of info.sn || []) {
           if (!sn) continue
+          if (snNeedle && !String(sn).toLowerCase().includes(snNeedle)) continue
           if (!includeAll && !String(sn).toLowerCase().includes(needle)) continue
           if (!cell.has(key)) cell.set(key, [])
           cell.get(key).push(sn)
@@ -430,7 +434,31 @@ export default function FixtureListPage() {
     )
 
     return { rows, positions: [...POSITION_ORDER, ...extras], processBy, countBy, standardBy }
-  }, [docs, appliedFilters.line, appliedFilters.model, needle, t])
+  }, [docs, appliedFilters.line, appliedFilters.model, needle, snNeedle, t])
+
+  const listRows = useMemo(() => {
+    const rows = []
+    for (const row of matrix.rows) {
+      for (const position of matrix.positions) {
+        const sns = row.cell.get(position) || []
+        if (!sns.length) continue
+        rows.push({
+          id: `${row.id}-${position}`,
+          line: row.line || '-',
+          model: row.model || '-',
+          position,
+          process: [...(matrix.processBy.get(position) || [])].join(', ') || '-',
+          sns,
+          count: sns.length,
+        })
+      }
+    }
+    return rows.sort((a, b) =>
+      String(a.line || '').localeCompare(String(b.line || '')) ||
+      String(a.model || '').localeCompare(String(b.model || '')) ||
+      String(a.position || '').localeCompare(String(b.position || '')),
+    )
+  }, [matrix])
 
   const statusValues = valuesFor(detailOptions, 'statuses').length
     ? valuesFor(detailOptions, 'statuses')
@@ -438,6 +466,12 @@ export default function FixtureListPage() {
 
   const filterFields = useMemo(() => {
     const fields = [
+      {
+        key: 'sn',
+        label: t('SN', 'SN'),
+        kind: 'text',
+        placeholder: t('พิมพ์ SN บางส่วน…', 'Type part of the SN…'),
+      },
       { key: 'line', label: t('Line', 'Line'), options: toOptions(valuesFor(detailOptions, 'lines')) },
       { key: 'model', label: t('Model', 'Model'), options: toOptions(valuesFor(detailOptions, 'models')) },
       {
@@ -606,29 +640,25 @@ export default function FixtureListPage() {
           <SectionHeader title={t('กรองข้อมูล Fixture', 'Filter fixtures')} className="mb-2" />
           <div className="grid gap-4 sm:grid-cols-3 md:grid-cols-5">
             {filterFields.map((field) => (
-              <FormField key={field.key} label={field.label}>
-                <SearchableSelect
-                  value={filters[field.key]}
-                  onChange={(value) => setFilter(field.key, value)}
-                  options={field.options}
-                  placeholder={t('ทั้งหมด', 'All')}
-                  clearable
-                />
+              <FormField key={field.key} label={field.label} className={field.kind === 'text' ? 'sm:col-span-2 md:col-span-2' : ''}>
+                {field.kind === 'text' ? (
+                  <Input
+                    className="font-mono"
+                    value={filters[field.key] || ''}
+                    onChange={(event) => setFilter(field.key, event.target.value)}
+                    placeholder={field.placeholder}
+                  />
+                ) : (
+                  <SearchableSelect
+                    value={filters[field.key]}
+                    onChange={(value) => setFilter(field.key, value)}
+                    options={field.options}
+                    placeholder={t('ทั้งหมด', 'All')}
+                    clearable
+                  />
+                )}
               </FormField>
             ))}
-            {view === 'list' ? (
-              <FormField label={t('ค้นหา', 'Search')} className="sm:col-span-2 lg:col-span-2">
-                <div className="relative">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-                  <Input
-                    className="pl-9"
-                    placeholder={t('SN / Model / Position...', 'SN / Model / Position...')}
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                  />
-                </div>
-              </FormField>
-            ) : null}
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-2.5">
             <Button icon={Search} onClick={runSearch} disabled={fixtureLoading}>
@@ -675,104 +705,85 @@ export default function FixtureListPage() {
           <EmptyState icon={Boxes} title={t('ไม่พบรายการ Fixture', 'No fixture list found')} />
         </Card>
       ) : (
-        <Card className="overflow-hidden">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/60 px-4 py-3">
-            <div>
-              <p className="text-xs font-black text-slate-800">{t('รายการ Fixture แยกตาม Model', 'Fixture list by model')}</p>
-              <p className="text-[10px] text-slate-400">
-                {t('แต่ละคอลัมน์คือ Fixture Position · แถวคือ Line + Model', 'Each column is a fixture position · each row is a line + model')}
-              </p>
-            </div>
-            <span className="rounded-lg bg-white px-2.5 py-1 text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">
-              {t(`${matrix.rows.length.toLocaleString()} Model`, `${matrix.rows.length.toLocaleString()} model(s)`)}
-            </span>
-          </div>
+                 <Card className="overflow-hidden">
+           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/60 px-4 py-3">
+             <div>
+               <p className="text-xs font-black text-slate-800">{t('รายการ Fixture แยกตาม Position', 'Fixture list by position')}</p>
+               <p className="text-[10px] text-slate-400">
+                 {t('แต่ละแถวคือ Line + Model + Position · SN แสดงเป็น chips', 'Each row is Line + Model + Position · SNs shown as chips')}
+               </p>
+             </div>
+             <span className="rounded-lg bg-white px-2.5 py-1 text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">
+               {t(`${listRows.length.toLocaleString()} รายการ`, `${listRows.length.toLocaleString()} row(s)`)}
+             </span>
+           </div>
 
-          <div className="max-h-[calc(100vh-320px)] overflow-auto">
-            <table className="w-max min-w-full border-collapse text-left text-[11px]">
-              <thead>
-                <tr>
-                  <th className="sticky left-0 top-0 z-40 w-[72px] min-w-[72px] border-b border-r border-slate-200 bg-slate-50 px-2 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
-                    {t('Line', 'Line')}
-                  </th>
-                  <th className="sticky left-[72px] top-0 z-40 w-[170px] min-w-[170px] border-b border-r border-slate-200 bg-slate-50 px-2 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
-                    {t('Model', 'Model')}
-                  </th>
-                  {matrix.positions.map((position) => {
-                    const processes = [...(matrix.processBy.get(position) || [])]
-                    const count = matrix.countBy.get(position) || 0
-                    const standard = matrix.standardBy.get(position) || 0
-                    return (
-                      <th
-                        key={position}
-                        className="sticky top-0 z-20 min-w-[120px] max-w-[140px] border-b border-r border-slate-200 bg-slate-50 px-2 py-2 align-top"
-                        title={t(
-                          `SN ที่ลงทะเบียน ${count.toLocaleString()} · จำนวนที่ใช้จริงต่อ fixture base ${standard.toLocaleString()}`,
-                          `Registered SN ${count.toLocaleString()} · actual usage per fixture base ${standard.toLocaleString()}`,
-                        )}
-                      >
-                        <div className="space-y-1">
-                          <p className="text-[10px] font-bold leading-tight text-slate-700">{position}</p>
-                          <p
-                            className="truncate text-[9px] font-medium text-slate-400"
-                            title={processes.join(', ')}
-                          >
-                            {processes.join(', ') || '-'}
-                          </p>
-                          <p className="flex items-baseline gap-1 text-[9px] font-black">
-                            <span className="text-blue-600">{count.toLocaleString()}</span>
-                            {standard > 0 ? (
-                              <span className="font-semibold text-slate-400">
-                                {t(`/ ใช้ ${standard.toLocaleString()}`, `/ used ${standard.toLocaleString()}`)}
-                              </span>
-                            ) : null}
-                          </p>
-                        </div>
-                      </th>
-                    )
-                  })}
-                </tr>
-              </thead>
-              <tbody>
-                {matrix.rows.map((row) => (
-                  <tr key={row.id}>
-                    <td className="sticky left-0 z-10 w-[72px] min-w-[72px] border-b border-r border-slate-100 bg-white px-2 py-2 text-[11px] font-bold text-slate-700">
-                      {row.line || '-'}
-                    </td>
-                    <td className="sticky left-[72px] z-10 w-[170px] min-w-[170px] border-b border-r border-slate-100 bg-white px-2 py-2 font-mono text-[10px] font-semibold text-slate-600">
-                      {row.model || '-'}
-                    </td>
-                    {matrix.positions.map((position) => {
-                      const sns = row.cell.get(position) || []
-                      return (
-                        <td
-                          key={position}
-                          className="border-b border-r border-slate-100 px-2 py-2 align-top"
-                        >
-                          {sns.length === 0 ? (
-                            <span className="text-[10px] text-slate-300">-</span>
-                          ) : (
-                            <div className="space-y-0.5">
-                              {sns.map((sn) => (
-                                <span
-                                  key={sn}
-                                  className="block max-w-[130px] truncate font-mono text-[10px] font-semibold text-slate-600"
-                                  title={sn}
-                                >
-                                  {sn}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </td>
-                      )
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+           <div className="max-h-[calc(100vh-320px)] overflow-auto">
+             <table className="min-w-full border-collapse text-left text-[11px]">
+               <thead>
+                 <tr className="bg-slate-50">
+                   <th className="sticky top-0 z-20 border-b border-r border-slate-200 px-3 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
+                     {t('Line', 'Line')}
+                   </th>
+                   <th className="sticky top-0 z-20 border-b border-r border-slate-200 px-3 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
+                     {t('Model', 'Model')}
+                   </th>
+                   <th className="sticky top-0 z-20 border-b border-r border-slate-200 px-3 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
+                     {t('Position', 'Position')}
+                   </th>
+                   <th className="sticky top-0 z-20 border-b border-r border-slate-200 px-3 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
+                     {t('Process', 'Process')}
+                   </th>
+                   <th className="sticky top-0 z-20 border-b border-r border-slate-200 px-3 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
+                     {t('SN', 'SN')}
+                   </th>
+                   <th className="sticky top-0 z-20 border-b border-slate-200 px-3 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
+                     {t('จำนวน', 'Count')}
+                   </th>
+                 </tr>
+               </thead>
+               <tbody>
+                 {listRows.map((row) => (
+                   <tr key={row.id} className="border-b border-slate-100 hover:bg-slate-50/70">
+                     <td className="border-r border-slate-100 px-3 py-2 text-[11px] font-bold text-slate-700">
+                       {row.line || '-'}
+                     </td>
+                     <td className="border-r border-slate-100 px-3 py-2 font-mono text-[10px] font-semibold text-slate-600">
+                       {row.model || '-'}
+                     </td>
+                     <td className="border-r border-slate-100 px-3 py-2 text-[11px] font-semibold text-slate-700">
+                       {row.position || '-'}
+                     </td>
+                     <td className="border-r border-slate-100 px-3 py-2 text-[10px] text-slate-500">
+                       {row.process || '-'}
+                     </td>
+                     <td className="border-r border-slate-100 px-3 py-2">
+                       <div className="flex flex-wrap gap-1">
+                         {row.sns.map((sn) => (
+                           <span
+                             key={sn}
+                             className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-600"
+                             title={sn}
+                           >
+                             {sn}
+                           </span>
+                         ))}
+                       </div>
+                     </td>
+                     <td className="px-3 py-2 text-center text-[11px] font-black text-blue-600">
+                       {row.count.toLocaleString()}
+                     </td>
+                   </tr>
+                 ))}
+               </tbody>
+             </table>
+             {listRows.length === 0 ? (
+               <div className="p-6 text-center text-[11px] font-semibold text-slate-400">
+                 {t('ไม่พบรายการ Fixture', 'No fixture list found')}
+               </div>
+             ) : null}
+           </div>
+         </Card>
       )}
 
       <Modal

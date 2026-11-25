@@ -437,7 +437,7 @@ export default function DashboardPage() {
         <KpiCard label={t('พร้อมเบิกจ่าย', 'Ready in stock')} value={summary.stock} hint={fixtureStatus('In Stock')} icon={PackageSearch} color={COLORS.emerald} meter={summary.total ? (summary.stock / summary.total) * 100 : 0} />
         <KpiCard label={t('ซ่อมบำรุง', 'Maintenance')} value={summary.maintenance} hint={t('อยู่ในคิวซ่อม', 'In repair queue')} icon={Wrench} color={COLORS.amber} meter={summary.total ? (summary.maintenance / summary.total) * 100 : 0} />
         <KpiCard label={t('คำขอค้าง', 'Active requests')} value={summary.activeRequests} hint={`${summary.requestTotal} ${t('คำขอทั้งหมด', 'total requests')}`} icon={ClipboardList} color={COLORS.violet} meter={summary.requestTotal ? (summary.activeRequests / summary.requestTotal) * 100 : 0} />
-        <KpiCard label={t('PM เกินกำหนด', 'PM overdue')} value={summary.pmOverdue} hint={t('เกิน 7 วันต้องมี 4M', '4M required after 7 days')} icon={AlertTriangle} color={COLORS.rose} meter={Math.min(100, summary.pmOverdue * 8)} />
+        <KpiCard label={t('PM เกินกำหนด', 'PM overdue')} value={summary.pmOverdue} hint={t('เกิน 3 วันต้องมี 4M', '4M required after 3 days')} icon={AlertTriangle} color={COLORS.rose} meter={Math.min(100, summary.pmOverdue * 8)} />
       </div>
 
       {/* Primary charts */}

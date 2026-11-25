@@ -43,7 +43,6 @@ const resolveChangeModel = (request) => {
 }
 
 const isModelSwap = (request) => /change\s*model|replace/i.test(String(request?.type || ''))
-const isReplace = (request) => /replace/i.test(String(request?.type || ''))
 const isBreakdown = (request) => /breakdown/i.test(String(request?.type || ''))
 
 /* Slot stored on a request is the start hour (e.g. "07:00"); show its 1-hour range. */
@@ -60,23 +59,6 @@ const lineLabel = (request) => {
   return slot ? `${line} ● ${slot}` : line
 }
 
-const replaceQtyLabel = (request, t) => {
-  const qty = Number(request?.replaceQty)
-  const count = Number.isInteger(qty) && qty >= 1 ? qty : 0
-  return count ? `${t('Replace', 'Replace')} ${count} ${t('ตัว', 'pcs')}` : t('Replace', 'Replace')
-}
-
-const isRequestor = (request, user) => {
-  const owner = String(request?.requestInfo?.empId || '').toLowerCase()
-  const actor = String(user?.userId || user?.empId || '').toLowerCase()
-  return Boolean(owner && owner === actor)
-}
-
-const isAssignee = (request, user) => {
-  const tech = String(request?.acceptInfo?.empId || request?.issueInfo?.empId || '').toLowerCase()
-  const actor = String(user?.userId || user?.empId || '').toLowerCase()
-  return Boolean(tech && tech === actor)
-}
 
 const personLabel = (person) => {
   if (!person) return '-'
@@ -333,7 +315,7 @@ export default function OrderPage({ user }) {
 
   const ACTION_PEOPLE = [
     { key: 'requestInfo', label: t('ผู้ขอ (Request)', 'Requester'), dot: 'bg-slate-400' },
-    { key: 'acceptInfo', label: t('ผู้รับงาน (Accept)', 'Assignee (Accept)'), dot: 'bg-blue-500' },
+    { key: 'acceptInfo', label: t('ผู้รับงาน (Accept)', 'Technician (Accept)'), dot: 'bg-blue-500' },
     { key: 'issueInfo', label: t('ผู้ดำเนินการ (Tech)', 'Technician (Tech)'), dot: 'bg-purple-500' },
     { key: 'verifyInfo', label: t('ผู้ตรวจสอบ (Verify)', 'Verifier (Verify)'), dot: 'bg-emerald-500' },
   ]
@@ -604,11 +586,6 @@ export default function OrderPage({ user }) {
                       {isModelSwap(r) ? <ArrowRight className="h-3 w-3" /> : <Wrench className="h-3 w-3" />}
                       {requestType(isModelSwap(r) ? r.type : 'Breakdown')}
                     </span>
-                    {isReplace(r) ? (
-                      <span className="inline-flex items-center rounded-lg bg-violet-100 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-violet-700">
-                        {replaceQtyLabel(r, t)}
-                      </span>
-                    ) : null}
                     <span className="request-type-badge text-[10px] font-bold text-slate-400 uppercase">
                       {r.requestType ? requestType(r.requestType) : ''}
                     </span>
@@ -655,7 +632,7 @@ export default function OrderPage({ user }) {
                       </span>
                       <span className={`rounded-lg px-2 py-1 ${hasApproval('assignee') ? DONE_CHIP : PENDING_CHIP}`}>
                         {hasApproval('assignee') ? <CheckCircle2 className="mr-1 inline h-3 w-3" /> : null}
-                        {t('ช่าง', 'Assignee')}
+                        {t('ช่าง', 'Technician')}
                       </span>
                     </div>
                   ) : null}
@@ -667,7 +644,7 @@ export default function OrderPage({ user }) {
                     </div>
                     {(r.acceptInfo || r.issueInfo) ? (
                       <div>
-                        <p className="text-slate-400 font-bold uppercase text-[9px]">{t('ช่างที่รับงาน', 'Assignee')}</p>
+                        <p className="text-slate-400 font-bold uppercase text-[9px]">{t('ช่างที่รับงาน', 'Technician')}</p>
                         <p className="font-semibold text-slate-700">
                           {personLabel(r.issueInfo || r.acceptInfo)}
                         </p>
@@ -738,24 +715,16 @@ export default function OrderPage({ user }) {
                   ) : null}
 
                   {status === 'Verify' ? (
-                    isRequestor(r, user) || isAssignee(r, user) ? (
-                      <Button
-                        size="sm"
-                        variant="success"
-                        className="h-9 flex-1"
-                        disabled={busy}
-                        icon={Undo2}
-                        onClick={() => { setScanPhase('return'); setScanRequest(r) }}
-                      >
-                        {isRequestor(r, user)
-                          ? t('Verify / ยืนยัน', 'Verify / Confirm')
-                          : t('ยืนยันรับคืน', 'Confirm return')}
-                      </Button>
-                    ) : (
-                      <div className="flex h-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-[10px] font-bold text-slate-400">
-                        {t('รอผู้ขอหรือช่างที่รับงานยืนยัน', 'Waiting for requester or assignee')}
-                      </div>
-                    )
+                    <Button
+                      size="sm"
+                      variant="success"
+                      className="h-9 flex-1"
+                      disabled={busy}
+                      icon={Undo2}
+                      onClick={() => { setScanPhase('return'); setScanRequest(r) }}
+                    >
+                      {t('Verify / ยืนยัน', 'Verify / Confirm')}
+                    </Button>
                   ) : null}
                   </div>
                 </div>
@@ -792,9 +761,6 @@ export default function OrderPage({ user }) {
                     {detail.currentModel || '-'} <ArrowRight className="inline h-3 w-3" /> {resolveChangeModel(detail) || '-'}
                   </span>
                 </InfoRow>
-              ) : null}
-              {isReplace(detail) ? (
-                <InfoRow label={t('จำนวนที่เปลี่ยน', 'Replace qty')}>{replaceQtyLabel(detail, t)}</InfoRow>
               ) : null}
               <InfoRow label={t('ผู้ขอ', 'Requester')}>
                 {personLabel(detail.requestInfo)} · {formatDateTime(detail.requestInfo?.date)}
@@ -881,9 +847,6 @@ export default function OrderPage({ user }) {
                   </span>
                 </InfoRow>
               ) : null}
-              {isReplace(acceptModal) ? (
-                <InfoRow label={t('จำนวนที่เปลี่ยน', 'Replace qty')}>{replaceQtyLabel(acceptModal, t)}</InfoRow>
-              ) : null}
               <InfoRow label={t('ผู้ขอ', 'Requester')}>
                 {personLabel(acceptModal.requestInfo)} · {formatDateTime(acceptModal.requestInfo?.date)}
               </InfoRow>
@@ -949,9 +912,6 @@ export default function OrderPage({ user }) {
             <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
               <InfoRow label={t('Line', 'Line')}>{lineLabel(actionModal.request)}</InfoRow>
               <InfoRow label={t('ประเภทคำขอ', 'Request type')}>{requestType(actionModal.request?.type)}</InfoRow>
-              {isReplace(actionModal.request) ? (
-                <InfoRow label={t('จำนวนที่เปลี่ยน', 'Replace qty')}>{replaceQtyLabel(actionModal.request, t)}</InfoRow>
-              ) : null}
               <InfoRow label={t('สถานะ', 'Status')}>
                 {actionModal.request?.status ? requestStatus(actionModal.request.status) : '-'} → {ACTION_META[actionModal.action]?.label}
               </InfoRow>

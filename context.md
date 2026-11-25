@@ -1,14 +1,14 @@
 # Fixture Management — Project Context
 
 > เอกสารอ้างอิงของโปรเจค **Fixture Management / FAN2 Flow MM**  
-> อัปเดตจากโค้ดปัจจุบัน (ยังไม่ commit) เมื่อ 2026-11-23
+> อัปเดตจากโค้ดปัจจุบัน (ยังไม่ commit) เมื่อ 2026-11-25
 > แหล่งความจริงของธุรกิจ: `Fixture MM.drawio` (อ้างอิงในหัวข้อ `server.js`)
 
 ---
 
 ## 1. ภาพรวมระบบ
 
-ระบบบริหารจัดการ Fixture ของสายผลิต FAN2 (Delta) ครอบคลุมตั้งแต่ลงทะเบียน Fixture, สร้างคำขอ **Change Model / Replace / Breakdown**, รับงาน–สแกน–จ่าย/รับคืนผ่านหน้า **Order**, PM/ซ่อมบำรุงแบบราย Line+Model พร้อมเอกสาร 4M, ประวัติ และ Dashboard แบบ read-only ที่รวมข้อมูลทุกหน้าไว้ในหน้าเดียว
+ระบบบริหารจัดการ Fixture ของสายผลิต FAN2 (Delta) ครอบคลุมตั้งแต่ลงทะเบียน Fixture, สร้างคำขอ **Change Model / Replace / Breakdown**, รับงาน–สแกน–จ่าย/รับคืนผ่านหน้า **Order**, PM/ซ่อมบำรุงแบบราย Line+Model พร้อมเอกสาร 4M, ประวัติ และ Dashboard แบบ read-only กระชับ ดูได้ในหน้าเดียว
 
 **ไม่มีหน้า Issue/Return แยกอีกต่อไป** — ทุกการจ่าย/รับคืนต้องผ่าน Request → Order เท่านั้น (ลบทั้ง page, nav, API `/api/issue`, `/api/return`)
 
@@ -22,7 +22,7 @@
 | Excel | `xlsx` (lazy-load เฉพาะหน้า Fixture List) |
 | QR/Print | `qrcode` + `window.print()` |
 | Backend | Express 5 + Mongoose 9 + MongoDB |
-| Upload | Multer (เก็บเอกสาร 4M ที่ `my-react-app/uploads/pm`) |
+| Upload | Multer (เก็บเอกสาร 4M ที่ `my-react-app/uploads/pm`, ไม่เกิน 25 MB; UI รับ PDF / Word / Excel / PowerPoint / รูปภาพ) |
 | Dev | `concurrently` รัน API :3000 + Vite :8000 |
 
 **ไม่มี React Router** — การเปลี่ยนหน้าใช้ state `page` ใน `App.jsx` + `localStorage.currentPage`; `navigate()` scroll กลับด้านบนเสมอ
@@ -80,7 +80,7 @@ Fixture Management/
       │  └─ ui/                       ← Button, Card, Modal, Field, DataTable, Tabs, Toast, ...
       └─ pages/
          ├─ LoginPage.jsx
-         ├─ DashboardPage.jsx         ← read-only control center รวมทุกหน้า
+         ├─ DashboardPage.jsx         ← read-only 1 จอ: StatCard 4 ตัว + สรุป Fixture/งาน
          ├─ RequestPage.jsx           ← Change Model / Replace / Breakdown
          ├─ OrderPage.jsx             ← Progress = issue, Verify = return
          ├─ FixtureListPage.jsx
@@ -117,6 +117,9 @@ npm run reset-db -- --all --yes    # + users (server จะ seed admin ใหม
 DB หลักต้องเป็น **`Fixture_Management`** (มี underscore)  
 ถ้า `users` ว่าง server จะ seed `admin / admin` (status `Admin`) อัตโนมัติ
 
+Migration user: รัน `node scripts/migrate-users.mjs` จาก `my-react-app`  
+(source `FixtureManagement.users` → target `Fixture_Management.users`; `signed`→`Signed`, `unsigned`→`Unsigned`, `Authorization=admin`→`Admin`; merge ตาม `empId` และคง `dept` / `request_id` เดิม)
+
 ---
 
 ## 4. Schema / Data Model
@@ -130,7 +133,7 @@ DB หลักต้องเป็น **`Fixture_Management`** (มี undersc
 | `empId` | String | **required**, index, รหัสพนักงาน (ใช้ login/actor) |
 | `pass` | String | **required**, เก็บ plain text (ยังไม่ hash) |
 | `name` / `lastname` / `dept` | String | ข้อมูลผู้ใช้ |
-| `status` | String | `Pending` — login ต้อง `Approved` / `Admin` |
+| `status` | String | `Unsigned` — login ต้อง `Signed` / `Admin` |
 | `request_id` | String | request ล่าสุดที่ user กำลังดำเนินการ |
 
 ⚠️ `register()` พยายามเขียน `username` แต่ **ไม่มีใน schema** → ถูก Mongoose strict ตัดทิ้ง
@@ -150,8 +153,12 @@ DB หลักต้องเป็น **`Fixture_Management`** (มี undersc
 | `usage.inUseAt` | String | **จุดเริ่มรอบ PM 90 วัน** — วันล่าสุดที่ `In Stock → In Use` |
 | `usage.currentModel` / `usage.changeModel` | String | โมเดลที่ใช้ / โมเดลปลายทางของ model swap |
 | `fixtureBase` / `revision` | String | base SN (ตัด suffix `-NN`) / revision |
-| `pmDate` | String | วันที่ Plan PM |
-| `pmForms` | [String] | **ประกาศใน schema แล้ว** — URL เอกสาร 4M `/uploads/pm/<file>` |
+| `pmDate` | String | วันที่เริ่ม PM / เข้าซ่อม |
+| `pmForms` | [String] | URL เอกสาร 4M `/uploads/pm/<file>` (บังคับเมื่อ overdue >3 วัน) |
+| `pmRequestedDays` | Number | จำนวนวันที่ขอทำ PM (เลือกตอนแนบ 4M) |
+| `pmApproval` | String | `'' / NotRequired / Pending / Approved / Rejected` |
+| `pmApprovedBy` / `pmApprovedAt` | String | ผู้อนุมัติ / เวลาที่ Admin กด |
+| `pmRunId` | String | รหัสรอบ PM (`PM · วันที่ · Line · Model`) — ใช้รวม event ของ PM run เดียวกันใน History |
 | `registered` | personSchema | ผู้ลงทะเบียน |
 
 `findFixture()` / `flattenFixtureDetails()` อ่าน `fixtureDetail` ก่อน; `fixtureList.fixtureInfo` เป็น fallback เฉพาะข้อมูลเก่า
@@ -190,9 +197,9 @@ DB หลักต้องเป็น **`Fixture_Management`** (มี undersc
 
 #### `history`
 
-`{ sn, request_id, action, detail, line, model, empId, name, lastname, date }`
+`{ sn, request_id, pm_run_id, action, detail, line, model, empId, name, lastname, date }`
 
-⚠️ `recordHistory()` ใน `server.js` คือ `() => Promise.resolve()` — **ไม่เขียน collection จริง** หน้า History อ่านได้แต่ข้อมูลอาจว่าง/เก่า
+`recordHistory(entry, user)` เขียน collection จริงทุก event (Request / Accept / Hold / Complete / Issue / Return / Verify / PM / Edit / Order …) — เมื่อ Verify ครบ 2 role จะมี history ของ Order นั้นครบชุด รวม record สรุปปิดงานพร้อมรายการ SN และชื่อผู้ยืนยัน; event ของ PM run ใหม่จะพก `pm_run_id` เพื่อให้ History รวมเป็นเอกสารเดียวต่อรอบ
 
 ### 4.2 External DB `FAN2` (read-only)
 
@@ -203,12 +210,12 @@ DB หลักต้องเป็น **`Fixture_Management`** (มี undersc
 
 ### 4.3 Enum / ค่าที่ใช้บ่อย
 
-- **Fixture status**: `In Stock`, `In Use`, `Maintenance`, `Scrape`, `PR`, `PR Ready`, `Replaced`
+- **Fixture status**: `In Stock`, `In Use`, `PM`, `PM Pending`, `Maintenance`, `Scrape`, `PR`, `PR Ready`, `Replaced`
 - **Request status**: `Waiting → Progress → Hold → Verify → Done` (+ `Rejected`)
-- **Request type**: `Change Model`, `Replace`, `Breakdown`
+- **Request type**: `Change Model`, `Breakdown` (Replace removed)
 - **Process Type**: `Mainline`, `Rotor`, `Winding`, `Function`
-- **PM states**: `tracked` (>7 วัน), `pre-alert` (1–7), `on-due`, `overdue-remind` (0–3), `over-due` (>3), `usage-remind` (≥80%)
-- **90-day clock**: ทุก `In Stock → In Use` ตั้ง `usage.inUseAt = วันนี้` + `usage.exp = +90 วัน` (confirm-scan, Issue Spare, PUT status→In Use, maintenance verify OK)
+- **PM states**: `tracked` (>3 วัน — ต้องแนบ 4M), `pre-alert` (1–3), `on-due`, `overdue-remind` (0–3), `over-due` (>3), `usage-remind` (≥80%)
+- **90-day clock**: ทุก `In Stock → In Use` ตั้ง `usage.inUseAt = วันนี้` + `usage.exp = +90 วัน` (confirm-scan, Issue Spare, PUT status→In Use); ครบกำหนด → status `PM`; Verify OK หลังซ่อมกลับ `In Stock` และเคลียร์นาฬิกา รอจ่ายออกจึงเริ่มรอบใหม่
 - **Order/NG lifecycle**: `Scrape → PR → PR Ready → Replaced` + `Restock` (API มี แต่ frontend ไม่เรียก)
 
 ---
@@ -217,10 +224,10 @@ DB หลักต้องเป็น **`Fixture_Management`** (มี undersc
 
 | หน้า / Flow | ต้องมีข้อมูลอะไร |
 |---|---|
-| Login | user ใน `users` ที่ `status = Approved` หรือ `Admin` |
+| Login | user ใน `users` ที่ `status = Signed` หรือ `Admin` (`Unsigned` เข้าไม่ได้) |
 | Request | FAN2 `Location` + `ModelNEW`; Change Model ต้องมีคิวว่างวันนี้; Replace ไม่ต้องการคิว |
 | Order / Scan | `phase=issue` ต้องเป็น `acceptInfo.empId`, `phase=return` ต้องเป็น `requestInfo.empId`; SN ต้องมีใน `fixtureDetail` แบบเต็ม |
-| PM | fixture อยู่ `In Use` / `Maintenance`; ถ้าเกิน 7 วันและยังไม่มี `pmForms` → ต้องแนบ 4M ก่อนแก้ไข |
+| PM | fixture อยู่ `In Use` / `PM` / `PM Pending` / `Maintenance`; ถ้าเกิน 3 วันและยังไม่มี `pmForms` → ต้องแนบ 4M ก่อนแก้ไข |
 | Import | Master `fixtureMeta.js` 49 row + `fixtureDetail.fixtureBase` ตรง base SN ใน Excel |
 | Sticker/4M | อัปโหลดไป `uploads/pm` และ serve `/uploads/pm/<file>` |
 
@@ -287,14 +294,17 @@ DB หลักต้องเป็น **`Fixture_Management`** (มี undersc
 
 | Method | Endpoint | หมายเหตุ |
 |---|---|---|
-| GET | `/api/pm` | fixtures `In Use,Maintenance` + `pmStates`, `pmOverdueDays`, `needs4M`, `usagePercent` |
-| POST | `/api/pm/plan` | body `{line, model, date}` → ทุก fixture `In Use` ที่ถึงกำหนดใน **Line+Model เดียวกัน** เป็น `Maintenance` + `pmDate`; **ไม่มี plan ราย SN**; 4M guard 409 |
-| POST | `/api/pm/extend` | 4M approve +XX days; **4M guard 409** |
+| GET | `/api/pm` | sync ครบกำหนด → `PM`; อ่าน `In Use,PM,PM Pending,Maintenance` + `pmStates`, `pmOverdueDays`, `needs4M`, `usagePercent` |
+| POST | `/api/pm/plan` | body `{line, model, date}` → ทุก fixture `PM` ที่พร้อมใน **Line+Model เดียวกัน** เป็น `Maintenance` + `pmDate`; **ไม่มี plan ราย SN**; ข้ามตัวที่ติด 4M |
+| POST | `/api/pm/start` | body `{sn, date}` → “กำลังทำ PM” รายตัว: `PM → Maintenance` (ต้องมี 4M ถ้าเกิน 3 วัน, ต้องไม่รอ Admin) |
+| POST | `/api/pm/approve` | body `{sn, action: approve\|reject}` → เฉพาะ `status=Admin`; `PM Pending → Maintenance` หรือกลับ `PM` |
+| POST | `/api/pm/extend` | legacy 4M approve +XX days; **4M guard 409** |
 | POST | `/api/pm/forms` | multipart 4M ต่อ SN → `/uploads/pm/...` (low-level, UI ไม่ใช้) |
-| POST | `/api/pm/forms/group` | multipart `{line, model, file}` → attach ให้ทุก fixture ที่เกิน 7 วันใน **Line+Model เดียวกัน** |
-| POST | `/api/pm/assign` | management assign QA/ME/TE/PD; **4M guard 409** |
+| POST | `/api/pm/forms/group` | multipart `{line, model, days, file}` → attach 4M ให้ทุกตัวที่เกิน 3 วัน; `days ≤ 7` → `PM`, `days > 7` → `PM Pending`; ปฏิเสธ group ที่ไม่มี Line/Model (ไม่ต้องใช้ 4M) |
+| POST | `/api/pm/assign` | legacy management assign QA/ME/TE/PD; **4M guard 409** |
 | GET | `/api/maintenance` | คิว status Maintenance |
-| POST | `/api/maintenance/verify` | OK → In Use + reset 90-day clock; NG → Scrape/PR/PR Ready/Replaced; **4M guard 409** |
+| POST | `/api/maintenance/verify` | OK → **In Stock** + เคลียร์นาฬิกา (เริ่มใหม่ตอนจ่ายออก); NG → Scrape/PR/PR Ready/Replaced; **4M guard 409** |
+| POST | `/api/maintenance/verify/bulk` | body `{sns[], result: OK\|NG, outcome?, user}` → ตรวจทีละ SN, ตอบ `{count, processed, skipped, message}`; ตัวที่ถูก 4M guard ข้ามแล้วรายงาน ไม่ทำให้ทั้งกลุ่มพัง |
 | GET | `/api/orders` | fixture ใน status NG chain |
 | POST | `/api/orders/:sn/action` | Accept/Reject/Hold/Issue/Verify/Reopen/Restock (ยังไม่มี UI) |
 
@@ -306,7 +316,7 @@ DB หลักต้องเป็น **`Fixture_Management`** (มี undersc
 - KPI/aggregate: `total`, `counts`, `orderCount`, `requestStats`, `requestTypeStats`, `byLine`, `byModel`, `byProcess`, `activeByLine`, `activeByModel`, `activeByProcess`, `lines`
 - Work lists: `dueRequests`, `pmAlerts`, `maintenanceQueue`, `orderFixtures` (ทั้งหมดตาม status)
 - Page summaries: `lineStats` (ต่อ Line), `storageStats` (ต่อ Storage), `pmStateCounts`, `recentFixtures` (8 ล่าสุดตาม `registered.date`), `recentRequests` (ทั้งหมด), `recentHistory` (20 ล่าสุด), `historyCount`
-`GET /api/history?...` (limit ≤ 1000), `GET /api/health`
+`GET /api/history?...` (limit ≤ 1000) รองรับ `section=order|pm` (action sets คู่กับ `HISTORY_SECTION_ACTIONS` ใน `constants.js`), `GET /api/health`
 
 Frontend wrapper ทั้งหมดอยู่ใน `src/lib/api.js` (`api`, `ApiError`)
 
@@ -316,7 +326,7 @@ Frontend wrapper ทั้งหมดอยู่ใน `src/lib/api.js` (`api`
 
 ### 7.1 Authentication
 
-- Login ด้วย empId + pass → `POST /api/login`; status ต้อง `Approved`/`Admin`
+- Login ด้วย empId + pass → `POST /api/login`; status ต้อง `Signed`/`Admin` (`Unsigned` เข้าไม่ได้)
 - เก็บ session ลง localStorage แล้วเข้า `dashboard`
 - **Password gate** ของ Order/PM ไม่มี endpoint พิเศษ — ใช้ `api.login({ empId: user.userId, pass })` เช็คซ้ำก่อน action จริง
 - Complete/Scan **ไม่มี password**
@@ -407,34 +417,40 @@ Waiting ──Accept──► Progress ──Scan+ตกลง(issue)──► V
 ### 7.8 Fixture List เป็นตารางอย่างเดียว
 
 - ไม่มี detail modal; modal เดียวคือ Import confirmation
-- `view = fixture`: 10 dropdown server-side filter จาก `/api/fixtures/detail/options` + storages (Process→Position dependency, ไม่มี SN search, Search/Clear)
-- `view = list`: matrix Line×Position + ช่องค้นหา SN/Model/Position
+- `view = fixture`: 10 dropdown server-side filter จาก `/api/fixtures/detail/options` + storages + **ช่อง SN แบบพิมพ์บางส่วน** (Process→Position dependency, Search/Clear)
+- `view = list`: matrix Line×Position + ช่องค้นหา SN/Model/Position; **ช่อง SN ใน filter ใช้กรอง matrix ได้ด้วย** (ต้องกด Search) — ถ้า base SN เดียวกันถูกอ้างในหลาย Model ของ `fixtureList` จะเห็นหลาย Model ตามข้อมูลจริง
+- หน้า Edit (Fixture/Due Date) ใช้ filter card เดียวกันและมีช่อง SN เพิ่มแล้ว
 
 ### 7.9 PM Checklist Phase 2 (ราย Line+Model + 4M)
 
-- `GET /api/pm` อ่าน `In Use,Maintenance` + คำนวณ states/overdue/`needs4M`
-- **Layout:** KPI 5 ตัวอยู่บนสุดแบบเต็มความกว้าง → ปฏิทิน PM อยู่ด้านล่างแบบเต็มความกว้าง (ไม่ได้อยู่ข้าง KPI)
-- **PM Worklist แสดงเป็น Line ก่อน (ไม่ใช้ตารางราย SN เป็นตัวหลัก)** — การ์ดแบบ drill-down: `Line` → ขยาย → `Model` → รายการ **Fixture ที่ใช้งานอยู่ใน Line นั้น** (SN, status, PM signal, exp, PM date, usage bar, ลิงก์ 4M)
-  - การ์ด Line แสดงสรุป overdue/on-due/pre-alert + จำนวน Model/Fixture/กำลังซ่อม; กดเพื่อขยาย/ยุบ
-  - ในแต่ละ Model มีปุ่ม **เลือกกลุ่มนี้** (ซิงก์ Line/Model selector บนสุดสำหรับอัปโหลด 4M) และ **PM กลุ่มนี้** (วางแผนระดับ Line+Model เท่านั้น)
-  - ตาราง SN แบบเดิมถูกลบออก; **ปฏิทินก็เป็น Line-level เช่นกัน** — แต่ละวันแสดง chip `Line + จำนวน Fixture` (dot ตาม PM state) แทน SN; กด chip → กรอง Line นั้น, เคลียร์ Model/SN filter, ขยายการ์ด Line และ scroll ไป worklist
-- **รัน PM เป็นราย Line+Model เท่านั้น** — มี Line selector + Model selector กรองปฏิทิน/KPI/worklist/maintenance ทั้งหมด
-  - ต้องเลือกทั้ง Line และ Model ก่อนกด **PM ตาม Line/Model**; ปุ่มจะ disabled ถ้าไม่ครบหรือไม่มี fixture ถึงกำหนด
-  - `POST /api/pm/plan` ส่ง `{line, model, date}` แล้ว server ส่งทุก fixture `In Use` ที่ถึงกำหนดในกลุ่มเข้าคิว (password gate)
-  - **ไม่มีปุ่ม/endpoint Plan ราย SN อีกต่อไป**; Verify OK/NG ยังทำราย SN ใน Maintenance queue
-- PM เฉพาะ fixture **`In Use`** ในกลุ่ม; `In Stock` ไม่เข้าปฏิทิน/ไม่ถูก Plan
-- ทุก `In Stock → In Use` เริ่มนาฬิกา 90 วัน (`usage.inUseAt` + `usage.exp`)
-- **เกิน 7 วันต้องมีเอกสาร 4M** แนบใน `fixtureDetail.pmForms`:
-  - อัปโหลดต่อกลุ่มด้วย `POST /api/pm/forms/group` → attach ให้ทุก fixture ที่ overdue >7 วันใน Line+Model เดียวกัน
-  - ไม่มีเอกสาร → **แก้ข้อมูล fixture ตัวนั้นไม่ได้เลย** (PUT/due-date/delete/import/pm plan/extend/assign/maintenance verify/verify return ถูก guard 409)
-  - ข้อความ: `Fixture <SN> เกินกำหนด PM <n> วัน — กรุณาแนบเอกสาร 4M ก่อนแก้ไขข้อมูล`
-- PMPage แสดงลิงก์ `pmForms` ที่แนบแล้ว (read-only), ข้อความบล็อกต่อกลุ่ม, และการ์ดอัปโหลด 4M ของ Line+Model; ไม่มี Action column ในตาราง PM
+- `GET /api/pm` sync ครบ 90 วัน → `PM` แล้วอ่าน `In Use,PM,PM Pending,Maintenance` + คำนวณ states/overdue/`needs4M`
+- **Layout ใหม่:** `StatCard` 4 ตัว (ติด 4M / รอ Admin / พร้อม PM / รอ Verify) อยู่บนสุด → **ปฏิทินกะทัดรัดแสดงตลอด** (cell 62–68px, chip ต่อ Line พร้อมจำนวน Fixture กดข้ามไป worklist) → **งานที่ต้องทำตอนนี้** ลำดับเดียว `ติด 4M` → `รอ Admin อนุมัติ` → `กำลังทำ PM ทั้งกลุ่ม` → `ตรวจรับคิวซ่อม`; worklist เต็มยุบหลังปุ่ม **ดูรายการทั้งหมดตาม Line → Model**
+- **Verify queue ทำใหม่:** group ตาม `Line → Model`, มี checkbox เลือกได้ทั้ง Line / ทั้ง Model / รายตัว แล้วกด **Done (OK)** หรือ **NG** ครั้งเดียว (ผ่าน `/api/maintenance/verify/bulk`, password gate)
+- **PM Worklist แสดงเป็น Line ก่อน** — `Line` → ขยาย → `Model` → รายการ Fixture (SN, status, PM signal, exp, PM date, usage bar, ลิงก์ 4M) + ปุ่ม **แนบ 4M กลุ่มนี้** / **กำลังทำ PM กลุ่มนี้**; ปุ่มรายตัวย้ายไปอยู่ในงานวันที่แล้ว
+- **ลำดับ status ใหม่:**
+  1. `In Stock → In Use` เริ่มนาฬิกา 90 วัน (`usage.inUseAt` + `usage.exp`)
+  2. ครบ `usage.exp` → `syncPmStatuses()` เปลี่ยนเป็น `PM`
+  3. เกิน 3 วัน → บังคับแนบ 4M; ตอนแนบต้องเลือก **PM กี่วัน**
+     - `≤ 7 วัน` → ยังเป็น `PM` รอกด **กำลังทำ PM**
+     - `> 7 วัน` → `PM Pending` รอ Admin **ยืนยัน / Reject** (รหัสผ่าน) ก่อนเข้าซ่อม
+  4. กด **กำลังทำ PM** (password) → `PM → Maintenance`; ใช้ได้เฉพาะของที่ไม่ติด 4M และไม่รอ Admin
+  5. Verify OK → `In Stock` + เคลียร์นาฬิกา; คราวหน้าที่สแกนจ่ายออกจึงเริ่ม 90 วันใหม่
+  6. Verify NG → `Scrape / PR / PR Ready / Replaced` ตามเดิม (ไม่มีปุ่ม Scrap แยก)
+- **แนบ 4M ต่อกลุ่ม** ด้วย `POST /api/pm/forms/group` → attach ให้ทุก fixture ที่ overdue >3 วันใน Line+Model เดียวกัน พร้อม `days` และ `needsApproval`
+- **Fixture ที่ไม่มีทั้ง Line และ Model (หรือเป็น `N/A`) ไม่ถูกนับและไม่ถูกบล็อกด้วย 4M** (`hasPmGroup()` ใน server + `hasGroupOf()` ใน PMPage); `POST /api/pm/forms/group` ตอบ 400 `Fixture ที่ไม่มี Line / Model ไม่ต้องแนบเอกสาร 4M`; `/api/pm/plan` อนุญาต group เปล่าได้ถ้าส่ง key มาชัดเจน
+- ไม่มีเอกสาร → **แก้ข้อมูล fixture ตัวนั้นไม่ได้เลย** (PUT/due-date/delete/import/pm plan/extend/assign/maintenance verify/verify return ถูก guard 409) ข้อความ: `Fixture <SN> เกินกำหนด PM <n> วัน — กรุณาแนบเอกสาร 4M ก่อนแก้ไขข้อมูล` — **เฉพาะ fixture ที่มี Line+Model เท่านั้น**
+- `POST /api/pm/plan` ต้องอ่าน `{line, model, date}` (ไม่ใช่ `sn`) แล้วกรอง fixture `PM` ในกลุ่ม, ข้ามตัวที่ `needs4M`, ตอบ `{count, skipped, message}`; ถ้าอ่าน `req.body.sn` จะตอบ 404 `ไม่พบ Serial Number นี้` (bug ที่เคยเกิด)
+- PMPage แสดงลิงก์ `pmForms`, ข้อความบล็อกต่อกลุ่ม, แผงอัปโหลด 4M พร้อมช่อง **PM กี่วัน** (รับ PDF/Word/Excel/PPT/ภาพ ≤25MB), ปุ่ม Approve/Reject เฉพาะ Admin
+- ทุกการเปลี่ยนสถานะ PM บันทึก `recordHistory`: `PM Due`, `4M Document`, `4M Approval Request`, `4M Approve`, `Start PM`, `PM Approve`, `PM Reject`, `PM OK`, `PM NG`
+- **PM run document:** `/api/pm/plan`, `/api/pm/start`, `/api/pm/approve` สร้าง `pmRunId = PM · PM date · Line · Model` เก็บใน fixtureDetail และเขียน `pm_run_id` ลง History; `maintenance verify` อ่านรหัสนี้ก่อนล้าง แล้วเขียน `PM OK`/`PM NG` พร้อม `pm_run_id` — ทำให้ History รวมทุก SN ของ Line+Model รอบเดียวกันเป็น 1 ใบ; event เก่าที่ไม่มีรหัสใช้ fallback ตาม Line+Model+วันที่เริ่ม PM
 
 ### 7.10 PM & Maintenance Verify
 
 - `GET /api/maintenance` → คิว Maintenance
-- **Verify OK** (password) → `In Use`, `pmDate:''`, `usage.exp = newExp`, `usage.current=0`, `usage.inUseAt=วันนี้`, พิมพ์ sticker
+- `POST /api/maintenance/verify` (รายตัว) และ `/api/maintenance/verify/bulk` (หลายตัว) ใช้ helper เดียวกัน `verifyMaintenanceFixture()`
+- **Verify OK** (password) → `In Stock`, เคลียร์ `pmDate`/`pmApproval`/`usage.inUseAt`/`usage.exp`/`usage.current`, พิมพ์ sticker เฉพาะเมื่อเลือก 1 ตัว; **ไม่ตั้งวัน PM ใหม่ตอนนี้**
 - **Verify NG** → `Scrape / PR / PR Ready / Replaced`, `pmDate:''`
+- หน้า PM group Verify เป็น `Line → Model → checkbox` + ปุ่ม **Done (OK) / NG**; ตัวที่โดน guard จะโชว์ใน toast `ข้าม n ตัว` ไม่บล็อกตัวอื่น
 
 ### 7.11 Edit Fixture
 
@@ -446,22 +462,18 @@ Waiting ──Accept──► Progress ──Scan+ตกลง(issue)──► V
 - Tab Storage (search + Refresh/Add, table ด้านล่าง) และ Tab Due Date (filter เดิม, checkbox หลายตัว, อัปเดต Exp วันเดียวทั้งชุด)
 - ถ้า server ตอบ 409 จาก 4M guard → แสดง inline banner พร้อมข้อความ + ชี้ไปหน้า PM เพื่อแนบเอกสาร
 
-### 7.12 Dashboard — Light analytics control center (read-only)
+### 7.12 Dashboard — Quiet operations snapshot (read-only)
 
-โทน **light analytics**: พื้นหลัง slate อ่อน, การ์ดสีขาวมุมโค้ง 24px, เส้น accent indigo, สถานะใช้ emerald/amber/rose/violet, ตัวเลข font-mono tabular-nums
+โทน **quiet**: การ์ดขาว, ตัวอักษร slate, accent น้ำเงินเฉพาะจุดสำคัญ + สีส้มสำหรับ PM overdue, ใช้ `StatCard` ตัวเดียวกับหน้าอื่น (ไม่มี meter bar, ไม่มี gradient, ไม่มีกราฟ)
 
 โครงสร้าง (ไม่มีปุ่ม/ลิงก์/quick actions ในเนื้อหา — มีเฉพาะ sidebar/nav ของ shell):
 
-1. **Header band** — eyebrow `Fixture Intelligence` + ชื่อหน้า + live snapshot (วันที่/เวลา)
-2. **KPI 6 ตัว** — Total, In Use, In Stock, Maintenance, Active Requests, PM Overdue พร้อม meter bar ต่อการ์ด
-3. **กราฟหลัก 3 แผง** — 7-day request **area chart** (SVG gradient), **donut** สุขภาพ Fixture (In Stock / In Use / Maintenance / NG), **stacked bar** การใช้ Fixture ต่อ Line
-4. **ความกดดัน + Top breakdown** — bar ตาม request status, chip ประเภทคำขอ + bar process, **Top fixture breakdown** ranked list (คะแนน M + PM + NG พร้อม segmented bar)
-5. **Priority radar + Process load** — due requests + PM overdue ที่เรียง urgency, การ์ด In-use แยกตาม Process Type
-6. **Register ตาราง** — คำขอ/Order ล่าสุด (อ่านอย่างเดียว)
+1. **PageHeader** — ชื่อหน้า + คำอธิบายสั้น ๆ ไม่มี actions
+2. **KPI 4 ตัว** — Total fixtures / In use / Active requests / PM overdue
+3. **สรุป 2 การ์ด** — สถานะ Fixture (In Stock / In Use / Maintenance / Order–NG) และงานค้าง (Waiting / Progress / Hold / Verify / Due soon) แบบ `InfoRow`
 
-aggregate ใหม่จาก `/api/dashboard`: `requestTrend` (7 วันจาก `requestInfo.date || date || createdAt`) และ `topBreakdown` (จัดอันดับ `line · model` จาก Maintenance + PM overdue + NG status)
-ข้อมูลอื่นยังมาจาก `/api/dashboard` ฝั่ง server — Dashboard ไม่เรียก API อื่นเพิ่ม
-ห้ามเพิ่ม retry button, action button, หรือลิงก์ภายใน Dashboard; `ErrorState` ก็ไม่มีปุ่ม Retry
+ข้อมูลทั้งหมดมาจาก `/api/dashboard` (`counts`, `requestStats`, `dueRequests`, `pmAlerts`) — ไม่เรียก API อื่นเพิ่ม
+ห้ามเพิ่ม retry button, action button, หรือลิงก์ภายใน Dashboard; `ErrorState` ก็ไม่มีปุ่ม Retry; เป้าหมายคือเห็นจบใน 1 หน้าจอ
 
 ---
 
@@ -470,16 +482,18 @@ aggregate ใหม่จาก `/api/dashboard`: `requestTrend` (7 วันจ
 | หน้า (key) | สิ่งที่ทำได้ | API หลัก | Password gate |
 |---|---|---|---|
 | Login (pre-auth) | Login, สมัครสมาชิก | `login`, `register` | login เอง |
-| Dashboard (`dashboard`) | read-only light analytics: header + KPI 6 + area/donut/stacked-bar + Top breakdown + priority radar + register table; ไม่มีปุ่มหรือลิงก์ในเนื้อหา | `dashboard` | ไม่ |
-| Request (`request`) | Change Model (มีคิว) / Replace (ไม่มีคิว, `replaceQty`) / Breakdown; Line/Model จาก FAN2 | `fan2Locations`, `fan2Models`, `changeModelSlots`, `createRequest` | ไม่ |
-| Order (`order`) | กรองคำขอ, แสดง slot, Progress = issue scan, Verify = **return scan modal (ช่างสแกน + ผู้ขอยืนยัน, ไม่มี password)**, Accept/Hold/Reject | `requests`, `scanPlan`, scan APIs, `login` | **Accept/Hold/Reject** |
+| Dashboard (`dashboard`) | read-only 1 จอ: PageHeader + `StatCard` 4 ตัว + สรุป Fixture/งาน 2 การ์ด; ไม่มีปุ่มหรือลิงก์ในเนื้อหา | `dashboard` | ไม่ |
+| Request (`request`) | Change Model (มีคิว) / Breakdown; Line/Model จาก FAN2; ช่องเลือกเป็นลำดับ Line → Model เดิม → Model ใหม่ → คิว | `fan2Locations`, `fan2Models`, `changeModelSlots`, `createRequest` | ไม่ |
+| Order (`order`) | กรองคำขอ, แสดง slot, Progress = issue scan, Verify = **ปุ่ม Verify → return scan modal (ช่างสแกน + ผู้ขอยืนยัน, ไม่มี password)**, Accept/Hold/Reject | `requests`, `scanPlan`, scan APIs, `login` | **Accept/Hold/Reject** |
 | Fixture List (`fixtures`) | Import Excel + ยืนยัน mismatch, ตารางแบน/matrix, filter 10 dropdown | `fixtureList`, `editFixtures`, `editFixtureOptions`, `importFixtureList` | ไม่ |
 | Edit Fixture (`edit`) | filter → table → editor, Storage, Due Date, แจ้ง 4M block | `fixtureFieldOptions`, `fixture`, `updateFixture`, `updateFixtureExpBulk`, `deleteFixture` | ไม่ |
-| PM (`pm`) | **KPI อยู่บนสุด → ปฏิทินเต็มความกว้าง → worklist แบบ Line → Model → Fixture ที่ใช้ใน Line**, PM ตามกลุ่ม, 4M upload ต่อกลุ่ม, Verify OK/NG + sticker ราย SN | `pm`, `pmPlan`, `pmUploadGroup`, `maintenance`, `login` | **Plan / Verify** |
+| PM (`pm`) | **KPI → ปฏิทินกะทัดรัด → งานที่ต้องทำตอนนี้** (ติด 4M → รอ Admin → กำลังทำ PM ทั้งกลุ่ม → Verify แบบเลือกหลายตัว); worklist เต็มยุบหลัง **ดูรายการทั้งหมดตาม Line → Model**; Verify OK → In Stock | `pm`, `pmPlan`, `pmStart`, `pmApprove`, `pmUploadGroup`, `maintenance`, `maintenanceVerifyBulk`, `login` | **Start PM / Approve / Reject / Verify** |
 | Register (`register`) | ลงทะเบียนแบบ queue, duplicate highlight, SN autofocus | `fan2Locations`, `fan2Models`, `storages`, `fixture`, `createFixture` | ไม่ |
-| History (`history`) | ค้นประวัติ (may be empty — `recordHistory` no-op) | `history` | ไม่ |
+| History (`history`) | **แยก 2 section**: `Order` (1 ใบ = 1 `request_id` ตั้งแต่สร้างจนปิดงาน + งานทั่วไปที่ไม่มีคำขอแยกตามวัน) และ `PM และซ่อมบำรุง` (1 ใบ = 1 PM run ของ Line/Model ผ่าน `pm_run_id`/fallback พร้อม timeline เก่า→ใหม่ + badge 4M/Approve/OK/NG; 4M/แจ้งเตือน/Reject แยก subsection); ใช้ `history({section})` | `history` | ไม่ |
 
-> ไม่มี route-level authorization — `role` ใช้แค่แสดงป้าย ADMIN; สิทธิ์จริงอยู่ที่ server guard
+> ไม่มี route-level authorization ฝั่ง server — `role` ใช้แค่แสดงป้าย ADMIN; สิทธิ์จริงอยู่ที่ server guard
+>
+> **Page visibility:** `status = Signed` เห็นเฉพาะ `order` / `request` และ landing ที่ `order`; `Admin` (role หรือ status) เห็นทุกหน้าเหมือนเดิม — กรองที่ `App.jsx` + `AppShell.jsx` ผ่าน helper ใน `navigation.js`, `status` ถูกเก็บใน `SESSION.status` ตอน login
 
 ---
 
@@ -489,7 +503,7 @@ aggregate ใหม่จาก `/api/dashboard`: `requestTrend` (7 วันจ
 - `api.js` — wrapper ทุก endpoint; `ApiError` มี `status`/`payload`; `scanRequest(requestId, sn, user, phase)`, `resetScan(requestId, user, phase)`
 - `i18n.js` — `useLabels()` (`requestType`, `fixtureStatus`, `requestStatus`, `pmState`…), `useServerMessage()` แปลข้อความ server แบบ exact + regex
 - `constants.js` — `PROCESS_TYPES`, `REQUEST_TYPES` (มี `Replace`), status tones
-- `navigation.js` — 4 กลุ่ม / **8 หน้า** (ไม่มี Issue/Return)
+- `navigation.js` — 4 กลุ่ม / **8 หน้า** (ไม่มี Issue/Return) + helper `allowedPagesFor` / `isPageAllowed` / `defaultPageFor` สำหรับ Signed-vs-Admin
 - `format.js` — `parseDate` (รองรับ พ.ศ.), `formatDate`, `daysUntil`, `toDateInput`, `initials`
 
 ---
@@ -504,13 +518,14 @@ aggregate ใหม่จาก `/api/dashboard`: `requestTrend` (7 วันจ
 - Request ฟอร์ม `max-w-4xl`; PageHeader/icon ชิดซ้าย; model swap แถวเดียว; คิวอยู่ใต้แถว Model; Breakdown เลื่อนภายใน
 - Order card แสดง `Line ● slot`; Progress = issue scan, Verify = return scan modal (ช่างสแกน / ผู้ขอยืนยัน, ไม่มี password)
 - PM calendar กว้างขึ้น: `minmax(560px,680px)` ที่ `xl`, `minmax(700px,820px)` ที่ `2xl`, `max-w-5xl` ก่อน `xl`, cell `min-h-[86px]`; ไม่มี workflow strip
-- Dashboard read-only light analytics 6 โซน: header / KPI 6 / กราฟ 3 แผง (area, donut, stacked bar) / request pressure + Top breakdown / priority radar + process load / register table; ไม่มีปุ่ม ลิงก์ หรือ quick actions ในเนื้อหา (ตรวจ DOM: main container มี 0 clickable)
+- Dashboard read-only กระชับ: PageHeader / `StatCard` 4 ตัว (สีน้ำเงิน + สีส้มตัวเดียว) / สรุปสถานะ Fixture และงานค้างแบบ `InfoRow`; ไม่มีกราฟ ปุ่ม ลิงก์ หรือ quick actions ในเนื้อหา (ตรวจ DOM: main container มี 0 clickable)
+- PM password modal เด้ง focus ไปช่องอื่นไม่ได้แล้ว: `Modal` ไม่ rerun focus effect เมื่อ `onClose` เปลี่ยนทุก render และรองรับ `initialFocus`; กล่องรหัสผ่าน PM ใช้ `[data-modal-autofocus]`
 
 ---
 
 ## 11. Known gaps / ข้อควรระวัง
 
-1. `recordHistory()` เป็น no-op — History อาจว่าง
+1. `recordHistory()` เขียนจริงแล้ว — ต้อง restart `npm run dev` หลังแก้ `server.js` มิเช่นนั้น History ยังดูเหมือนว่าง/เก่า
 2. Password เก็บ plain text, ไม่มี JWT; security อยู่ที่ `api.login` re-check + server guards
 3. Mongoose strict ยังตัด: `users.username`, `fixtureDetail.orderStatus/orderNote`, `fixtureInfo.count` — แต่ **`pmForms`, `usage.inUseAt`, `request.items/action` ประกาศแล้ว**
 4. ไม่มี route-level auth
@@ -530,12 +545,19 @@ aggregate ใหม่จาก `/api/dashboard`: `requestTrend` (7 วันจ
 - Password gate เฉพาะ Order Accept/Hold/Reject + PM actions; ทุก scan/confirm/verify ไม่มีรหัส
 - Scan: full-SN เท่านั้น, duplicate base ใช้ `planIndex`, reset ฝั่ง server, `phase:'issue'` ใน Progress / `phase:'return'` ใน Verify (assignee เท่านั้น); Breakdown issue อนุญาตสแปร์ base เดียวกัน (`allowSameBase`) แต่ return บังคับ exact SN (`strictSn`)
 - **ลบหน้า/APIs Issue–Return** ออกทั้งระบบ; ทุกจ่าย/คืนผ่าน Order
-- **Replace** เพิ่มเป็นประเภทคำขอ: เหมือน Change Model แต่ไม่ใช้คิว + `replaceQty`; duplicate ตรงข้ามกับ Change Model
+- **Replace ถูกนำออกทั้งระบบ**; Request เหลือ Change Model และ Breakdown โดย Change Model ใช้การเลือกตามลำดับ Line → Model เดิม → Model ใหม่ → คิว
 - **คิว Change Model** ใช้วันนี้, รวมทุก Line, status inline, occupied disabled; **ทุก request ในวันนั้นทำให้ slot เต็ม (ไม่สน status)**
 - Order: แสดง slot, แยก Progress=issue / Verify=return; ทุกบาร์โค้ดสแกนเป็นของช่างที่รับงาน; Verify ครบ 2 คน (ช่างสแกน + ผู้ขอยืนยัน); Verify ไม่กันรับงานใหม่ (กันเฉพาะ Progress)
-- PM: ราย Line+Model (ไม่มี Plan ราย SN), 90-day clock, กลไก 4M ต่อกลุ่ม, guard ห้ามแก้ fixture ที่เกิน 7 วันโดยไม่มี 4M; Verify ยังราย SN
+- PM: KPI → ปฏิทินกะทัดรัด → งานตามลำดับ; ราย Line+Model, 90-day clock → `PM`, 4M บังคับเมื่อเกิน 3 วัน + เลือก PM days, `>7 วัน` → `PM Pending` รอ Admin, `กำลังทำ PM` → `Maintenance`, Verify OK → `In Stock`, Verify แบบ multi-select ตาม Line/Model; ไม่มีปุ่ม Scrap แยก (ใช้ Verify NG → Need Scrape)
+- 4M ใช้เฉพาะ fixture ที่มี Line+Model; `N/A / N/A` ไม่ถูกนับ ไม่ถูกบล็อก แนบไฟล์ได้หลายรูปแบบ ≤25MB
 - Edit/Import/Due-date/Delete/PM ทุกตัวมี 4M guard + UI feedback; `confirm-scan` ก็ตรวจ 4M ก่อนจ่าย
-- Dashboard เปลี่ยนเป็น light analytics control center (KPI meter cards + SVG area/donut/stacked bars + Top fixture breakdown + priority radar), ใช้ aggregate ใหม่ `requestTrend` / `topBreakdown` จาก `/api/dashboard` — ไม่มี quick actions
+- Dashboard ปรับเป็น quiet one-screen snapshot — `StatCard` 4 ตัว + สรุป Fixture/งาน 2 การ์ด, สีน้อย, ไม่มีกราฟ/quick actions, ยัง read-only 100%
+- `Modal` เสถียรขึ้น: focus effect ไม่ถูก `onClose` แบบ inline รีเซ็ตขณะพิมพ์รหัส; PM plan/verify modal โฟกัสที่ช่องรหัสผ่านทันที
+- Order Verify แสดงปุ่ม Verify เสมอ (เอา placeholder “waiting for requester or assignee” ออก); การตรวจสิทธิ์ยังอยู่ใน scan modal/server
+- `recordHistory()` เขียน `History` จริงและมี record สรุปปิด Order หลัง Verify ครบ 2 role — History แยกเป็น 2 section (`Order` 1 ใบ/คำขอ, `PM และซ่อมบำรุง` 1 ใบ/PM run ผ่าน `pm_run_id` + fallback) และข้อความ detail ผ่าน `sm()` แปล TH/ENG ด้วย
+- Request หน้า Change Model / Replace ใช้ `SearchableSelect` (พิมพ์ค้นหา) ทั้งช่อง Model เดิมและ Model ใหม่; ตัวเลือกยังมาจาก FAN2 `ModelNEW`
+- Fixture List และ Edit มีช่อง SN ใน filter; Fixture List ใช้ได้ทั้ง tab ตารางและ matrix, Edit ใช้ได้ทั้ง Fixture และ Due Date
+- `status: "Signed"` เห็นแค่หน้า order/request, landing = order; Admin เห็นทุกหน้า (กรอง nav + guard page ใน `App.jsx`)
 - Change Model compare ว่าง → fallback จ่าย fixture ของ `changeModel` / คืน fixture ของ `currentModel` ทั้งหมด (มี `fallback:true` ใน plan)
 - Fixture List table-only, Import mismatch modal, Fixture Base locked, Edit Status read-only, Process Type label คงเดิม
 - Import/Register/Duplicate/Autofocus/FAN2 dropdown คงพฤติกรรมที่ตรวจสอบแล้ว

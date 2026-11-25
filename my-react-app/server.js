@@ -76,7 +76,9 @@ const upload = multer({
       cb(null, `${Date.now()}-${safe}`)
     },
   }),
-  limits: { fileSize: 15 * 1024 * 1024 },
+  // 4M documents are often scanned PDFs / photos from the shop floor.
+  // 15 MB rejected real attachments, so allow up to the JSON body limit.
+  limits: { fileSize: 25 * 1024 * 1024 },
 })
 
 /* ------------------------------------------------------------------ */
@@ -110,7 +112,7 @@ const userSchema = new mongoose.Schema(
     name: String,
     lastname: String,
     dept: { type: String, default: '' },
-    status: { type: String, default: 'Pending', index: true },
+    status: { type: String, default: 'Unsigned', index: true },
     request_id: { type: String, default: '' },
   },
   { versionKey: false },
@@ -158,7 +160,12 @@ const fixtureDetailSchema = new mongoose.Schema(
     fixtureBase: String,
     revision: { type: String, default: '' },
     pmDate: { type: String, default: '' },
-    pmForms: { type: [String], default: [] }, // เอกสาร 4M แนบตอน PM เกิน 7 วัน
+    pmForms: { type: [String], default: [] }, // เอกสาร 4M (บังคับเมื่อเกินกำหนด PM 3 วัน)
+    pmRequestedDays: { type: Number, default: 0 }, // จำนวนวันที่ขอซ่อม PM
+    pmApproval: { type: String, default: '' }, // Pending / Approved / Rejected / NotRequired
+    pmApprovedBy: { type: String, default: '' },
+    pmApprovedAt: { type: String, default: '' },
+    pmRunId: { type: String, default: '' }, // groups one PM run for Line + Model + PM date
   },
   { versionKey: false },
 )
@@ -248,6 +255,7 @@ const historySchema = new mongoose.Schema(
   {
     sn: { type: String, index: true, default: '' },
     request_id: { type: String, index: true, default: '' },
+    pm_run_id: { type: String, index: true, default: '' },
     action: { type: String, index: true },
     detail: { type: String, default: '' },
     line: String,
@@ -274,7 +282,7 @@ const metaRowMatches = (a = {}, b = {}) =>
 const baseKey = (value) => text(value).replace(/\s+/g, '').toUpperCase()
 
 const ACTIVE_REQUEST_STATUSES = ['Waiting', 'Progress', 'Hold', 'Verify']
-const isModelSwap = (type) => /change\s*model|replace/i.test(String(type || ''))
+const isModelSwap = (type) => /^change\s*model$/i.test(String(type || '').trim())
 
 /* Change Model queue — 07:00–16:00, one 1-hour slot globally per day. */
 const CHANGE_MODEL_SLOTS = ['07:00', '08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00']
@@ -300,6 +308,10 @@ const todayInput = () => {
   const now = new Date()
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 }
+/* One PM document per Line + Model + PM date. Deterministic so fixtures
+ * started individually on the same day still land in the same PM run. */
+const pmRunKey = (line, model, date) =>
+  `PM|${date || todayInput()}|${text(line) || 'N/A'}|${text(model) || 'N/A'}`
 const addDaysInput = (date, days) => {
   const base = validDate(date) ? new Date(`${date}T00:00:00`) : new Date()
   base.setDate(base.getDate() + days)
@@ -324,7 +336,26 @@ const personFrom = (user) => ({
   date: new Date(),
 })
 
-const recordHistory = () => Promise.resolve()
+/* Persist one history row per business event. Order events are written as they
+ * happen so that, once Verify completes, History holds the full order trail. */
+const recordHistory = async (entry = {}, user = {}) => {
+  const action = text(entry.action)
+  if (!action) return
+
+  await History.create({
+    sn: text(entry.sn),
+    request_id: text(entry.request_id),
+    pm_run_id: text(entry.pm_run_id),
+    action,
+    detail: text(entry.detail),
+    line: text(entry.line),
+    model: text(entry.model),
+    empId: text(user?.userId || user?.empId || entry.empId),
+    name: text(user?.name || entry.name),
+    lastname: text(user?.lastName || user?.lastname || entry.lastname),
+    date: entry.date ? new Date(entry.date) : new Date(),
+  })
+}
 
 const findFixture = async (sn) => {
   let detail = await FixtureDetail.findOne({ sn }).lean()
@@ -495,7 +526,7 @@ const pmStateOf = (fixture) => {
 
   const states = []
   if (days !== null) {
-    if (days > 7) states.push('tracked')
+    if (days > 3) states.push('tracked') // เกิน 3 วัน → ต้องแนบ 4M ก่อนทำ PM
     else if (days > 0) states.push('pre-alert')
     else if (days === 0) states.push('on-due')
     else if (days >= -3) states.push('overdue-remind')
@@ -510,8 +541,17 @@ const pmOverdueDays = (fixture) => {
   const days = daysUntil(fixture?.usage?.exp)
   return days === null ? 0 : Math.max(0, -days)
 }
+/* 4M is a Line + Model control. Fixtures without both keys are not grouped,
+ * so they must not be blocked or counted by any 4M rule. */
+const hasPmGroup = (fixture) => {
+  const line = String(fixture?.line ?? '').trim().toLowerCase()
+  const model = String(fixture?.model ?? '').trim().toLowerCase()
+  return Boolean(line) && Boolean(model) && line !== 'n/a' && model !== 'n/a'
+}
 const needs4MDocument = (fixture) =>
-  pmOverdueDays(fixture) > 7 && !(Array.isArray(fixture?.pmForms) ? fixture.pmForms : []).length
+  hasPmGroup(fixture) &&
+  pmOverdueDays(fixture) > 3 &&
+  !(Array.isArray(fixture?.pmForms) ? fixture.pmForms : []).length
 const assertFixtureEditable = async (sn) => {
   const fixture = await findFixture(text(sn))
   if (fixture && needs4MDocument(fixture)) {
@@ -525,9 +565,34 @@ const assertFixtureEditable = async (sn) => {
   return null
 }
 
-const statusOfUser = (user) => String(user?.status || '')
-const isApproved = (user) => /approved|admin/i.test(statusOfUser(user))
-const isAdmin = (user) => /admin/i.test(statusOfUser(user))
+/* A fixture that reaches its 90-day PM due date moves In Use -> PM.
+ * There is no scheduler, so the transition is synced lazily on read. */
+const syncPmStatuses = async () => {
+  const today = todayInput()
+  const due = await FixtureDetail.find({
+    status: 'In Use',
+    'usage.exp': { $exists: true, $ne: '', $lte: today },
+  }).lean()
+  for (const fixture of due) {
+    await updateFixtureBySn(fixture.sn, { status: 'PM' })
+    await recordHistory(
+      {
+        sn: fixture.sn,
+        action: 'PM Due',
+        detail: `ครบกำหนด PM 90 วัน (${fixture.usage?.exp || today}) → รอทำ PM`,
+        line: fixture.line || '',
+        model: fixture.model || '',
+      },
+      null,
+    )
+  }
+  return due.length
+}
+
+const statusOfUser = (user) => String(user?.status || '').trim()
+const isSigned = (user) => /^signed$/i.test(statusOfUser(user))
+const isAdmin = (user) => /^admin$/i.test(statusOfUser(user))
+const canLogin = (user) => isSigned(user) || isAdmin(user)
 
 async function seedAdmin() {
   const count = await User.countDocuments()
@@ -562,10 +627,10 @@ app.post(
     if (!user) {
       return res.status(401).json({ success: false, message: 'Emp ID หรือ Password ไม่ถูกต้อง' })
     }
-    if (!isApproved(user)) {
+    if (!canLogin(user)) {
       return res.status(403).json({
         success: false,
-        message: 'บัญชีของคุณยังไม่ได้รับการอนุมัติ กรุณาติดต่อผู้ดูแลระบบ',
+        message: 'บัญชีของคุณยังไม่ได้ลงนาม กรุณาติดต่อผู้ดูแลระบบ',
       })
     }
 
@@ -614,11 +679,11 @@ app.post(
       name,
       lastname: lastname || '',
       dept: dept || '',
-      status: 'Pending',
+      status: 'Unsigned',
       request_id: '',
     })
 
-    return res.json({ success: true, message: 'Register Success! รอผู้ดูแลระบบอนุมัติ' })
+    return res.json({ success: true, message: 'Register Success! รอผู้ดูแลระบบลงนาม' })
   }),
 )
 
@@ -703,6 +768,7 @@ app.get(
 app.get(
   '/api/fixturelist',
   asyncRoute(async (req, res) => {
+    await syncPmStatuses()
     const filter = {}
     if (req.query.line) filter.line = text(req.query.line)
     if (req.query.model) filter.model = text(req.query.model)
@@ -968,6 +1034,23 @@ app.get(
   }),
 )
 
+app.get(
+  '/api/fan2/machines',
+  asyncRoute(async (_req, res) => {
+    const db = await getFan2Db()
+    const docs = await db.collection('MachineNew').find({}, { projection: { machineCode: 1, name: 1, thaiName: 1, 'locationInfo.name': 1 } }).toArray()
+    const machines = [...new Set(docs.map((d) => text(d.machineCode)).filter(Boolean))].map((machineCode) => {
+      const machine = docs.find((d) => text(d.machineCode) === machineCode) || {}
+      return {
+        machineCode,
+        name: text(machine.name) || text(machine.thaiName) || '',
+        locationName: text(machine.locationInfo?.name),
+      }
+    })
+    res.json(machines)
+  }),
+)
+
 /* Fixture KPI counts (source of truth: fixtureDetail) */
 app.get(
   '/api/fixture-stats',
@@ -996,6 +1079,7 @@ app.get(
 app.get(
   '/api/fixtures',
   asyncRoute(async (req, res) => {
+    await syncPmStatuses()
     const { line, model, status, sn, type, step, process, position, storage, fixtureBase, revision, q } = req.query
     let data = await flattenFixtures({
       line,
@@ -1612,6 +1696,9 @@ app.post(
     if (!type || !line) {
       return res.status(400).json({ success: false, message: 'กรุณาระบุประเภทคำขอและ Line' })
     }
+    if (!['Change Model', 'Breakdown'].includes(type)) {
+      return res.status(400).json({ success: false, message: 'ประเภทคำขอไม่ถูกต้อง' })
+    }
 
     /* A Change Model request reserves one global 1-hour prep slot for the day. */
     if (type === 'Change Model') {
@@ -1635,10 +1722,6 @@ app.post(
     const breakdownItems = Array.isArray(body.breakdownItems)
       ? body.breakdownItems.map((it) => ({ sn: text(it?.sn) || '', symptom: text(it?.symptom) || '' })).filter((it) => it.sn || it.symptom)
       : []
-    const replaceQty = Number(body.replaceQty)
-    if (type === 'Replace' && (!Number.isInteger(replaceQty) || replaceQty < 1)) {
-      return res.status(400).json({ success: false, message: 'กรุณาระบุจำนวน Fixture ที่ต้องเปลี่ยน (อย่างน้อย 1)' })
-    }
 
     /* Block duplicate requests. Rejected/Done are history and may be requested
      * again; Waiting/Progress/Hold/Verify are still active in the system. */
@@ -1663,7 +1746,7 @@ app.post(
     } else if (isModelSwap(type) && currentModel && changeModel) {
       const duplicate = await Request.findOne({
         ...duplicateFilter,
-        type: { $in: ['Change Model', 'Replace'] },
+        type: 'Change Model',
         line,
         currentModel,
         changeModel,
@@ -1692,7 +1775,6 @@ app.post(
       changeModel: changeModel || '',
       queueDate: type === 'Change Model' ? queueDate : undefined,
       queueSlot: type === 'Change Model' ? queueSlot : undefined,
-      replaceQty: type === 'Replace' ? replaceQty : undefined,
       requestType: text(body.requestType),
       step: text(body.step),
       dueDate: text(body.dueDate),
@@ -2303,6 +2385,16 @@ app.put(
       request.verifyInfo = personFrom(req.body?.user || {})
       await request.save()
       const waiting = approved.has('requester') ? 'assignee' : 'requester'
+      await recordHistory(
+        {
+          request_id: request.request_id,
+          action: 'Verify',
+          detail: `ยืนยันโดย ${roles.join(', ')} — รอ${waiting === 'assignee' ? 'ช่างที่รับงาน' : 'ผู้ขอ'}`,
+          line: request.line,
+          model: request.currentModel,
+        },
+        req.body?.user,
+      )
       return res.json({
         success: true,
         request,
@@ -2361,6 +2453,25 @@ app.put(
       )
     }
 
+    const verifiedSn = [...new Set([
+      ...(request.scannedIssue || []),
+      ...(request.returnedItems || []),
+      ...(request.items || []),
+    ].map((sn) => text(sn)).filter(Boolean))]
+    const signers = (request.returnApprovals || [])
+      .map((item) => `${item.role}:${item.name || item.empId || '-'}`)
+      .join(', ')
+    await recordHistory(
+      {
+        request_id: request.request_id,
+        action: 'Verify',
+        detail: `ปิดคำขอ ${request.request_id} · ${request.type || '-'} · ${verifiedSn.length} ตัว${verifiedSn.length ? ` (${verifiedSn.join(', ')})` : ''}${signers ? ` · ${signers}` : ''}`,
+        line: request.line,
+        model: request.currentModel,
+      },
+      req.body?.user,
+    )
+
     request.verifyInfo = personFrom(req.body?.user || {})
     request.status = 'Done'
     await request.save()
@@ -2387,7 +2498,8 @@ app.delete(
 app.get(
   '/api/pm',
   asyncRoute(async (_req, res) => {
-    const fixtures = await flattenFixtureDetails({ status: 'In Use,Maintenance' })
+    await syncPmStatuses()
+    const fixtures = await flattenFixtureDetails({ status: 'In Use,Maintenance,PM,PM Pending' })
     const data = fixtures.map((fixture) => ({
       ...fixture,
       pmStates: pmStateOf(fixture),
@@ -2402,37 +2514,81 @@ app.get(
   }),
 )
 
-/* Plan PM -> PM & Maintenance */
+/* Plan PM -> PM & Maintenance (one Line + Model group at a time) */
 app.post(
   '/api/pm/plan',
   asyncRoute(async (req, res) => {
-    const sn = text(req.body?.sn)
-    const fixture = await findFixture(sn)
-    if (!fixture) return res.status(404).json({ success: false, message: 'ไม่พบ Serial Number นี้' })
-    const guard = await assertFixtureEditable(sn)
-    if (guard) return res.status(guard.status).json({ success: false, message: guard.message, ...guard })
-    if (fixture.status !== 'In Use') {
-      return res.status(409).json({
-        success: false,
-        message: fixture.status === 'Maintenance'
-          ? 'Fixture นี้อยู่ใน Maintenance แล้ว'
-          : 'PM ได้เฉพาะ Fixture ที่ใช้งานอยู่ (In Use) เท่านั้น',
-      })
+    // The UI shows an empty line/model as N/A; treat both spellings as the same group.
+    const groupValue = (value) => {
+      const raw = text(value)
+      return /^n\/?a$/i.test(raw) ? '' : raw
     }
+    const lineRaw = text(req.body?.line)
+    const modelRaw = text(req.body?.model)
+    const line = groupValue(lineRaw)
+    const model = groupValue(modelRaw)
+    // An explicit empty string is valid: it means the ungrouped (N/A) fixtures.
+    // Only a completely missing body should be rejected.
+    if (req.body?.line === undefined && req.body?.model === undefined) {
+      return res.status(400).json({ success: false, message: 'กรุณาเลือก Line และ Model ก่อนส่ง PM' })
+    }
+    const lineLabel = line || 'N/A'
+    const modelLabel = model || 'N/A'
     const pmDate = text(req.body?.date) || new Date().toISOString().slice(0, 10)
     const note = text(req.body?.note) || ''
-    await updateFixtureBySn(sn, { status: 'Maintenance', pmDate })
-    await recordHistory(
-      {
-        sn,
-        action: 'Plan PM',
-        detail: `Plan PM ${pmDate} → PM & Maintenance${note ? ` · ${note}` : ''}`,
-        line: fixture.line,
-        model: fixture.model,
-      },
-      req.body?.user,
+    await syncPmStatuses()
+
+    const fixtures = await flattenFixtureDetails({ status: 'PM' })
+    const groupRows = fixtures.filter(
+      (fixture) => groupValue(fixture.line) === line && groupValue(fixture.model) === model,
     )
-    return res.json({ success: true, pmDate, message: `ส่ง ${sn} เข้า PM & Maintenance (${pmDate})` })
+    const ready = groupRows.filter((fixture) => !needs4MDocument(fixture))
+
+    const planned = []
+    const skipped = []
+    for (const fixture of ready) {
+      const pmRunId = pmRunKey(fixture.line, fixture.model, pmDate)
+      const ok = await updateFixtureBySn(fixture.sn, {
+        status: 'Maintenance',
+        pmDate,
+        pmApproval: 'NotRequired',
+        pmRunId,
+      })
+      if (!ok) {
+        skipped.push(fixture.sn)
+        continue
+      }
+      await recordHistory(
+        {
+          sn: fixture.sn,
+          action: 'Start PM',
+          detail: `เริ่มทำ PM ${pmDate} → PM & Maintenance${note ? ` · ${note}` : ''}`,
+          line: fixture.line,
+          model: fixture.model,
+          pm_run_id: pmRunId,
+        },
+        req.body?.user,
+      )
+      planned.push(fixture.sn)
+    }
+
+    if (planned.length === 0) {
+      const blockedCount = groupRows.filter((fixture) => needs4MDocument(fixture)).length
+      return res.status(409).json({
+        success: false,
+        skipped,
+        message: blockedCount
+          ? `ต้องแนบเอกสาร 4M ก่อนเริ่ม PM ${blockedCount} ตัวใน Line ${lineLabel} / Model ${modelLabel}`
+          : `ไม่มี Fixture ที่พร้อมเริ่ม PM ใน Line ${lineLabel} / Model ${modelLabel}`,
+      })
+    }
+    return res.json({
+      success: true,
+      count: planned.length,
+      skipped,
+      pmDate,
+      message: `เริ่ม PM ${planned.length} ตัว → PM & Maintenance (${pmDate}) · Line ${lineLabel} / Model ${modelLabel}${skipped.length ? ` · ข้าม ${skipped.length} ตัว` : ''}`,
+    })
   }),
 )
 
@@ -2516,35 +2672,61 @@ app.post(
   '/api/pm/forms/group',
   upload.single('file'),
   asyncRoute(async (req, res) => {
-    const line = text(req.body?.line)
-    const model = text(req.body?.model)
+    const groupValue = (value) => {
+      const raw = text(value)
+      return /^n\/?a$/i.test(raw) ? '' : raw
+    }
+    const line = groupValue(req.body?.line)
+    const model = groupValue(req.body?.model)
     if (!line || !model) {
-      return res.status(400).json({ success: false, message: 'กรุณาระบุ Line และ Model ก่อนแนบเอกสาร 4M' })
+      return res.status(400).json({
+        success: false,
+        message: 'Fixture ที่ไม่มี Line / Model ไม่ต้องแนบเอกสาร 4M',
+      })
+    }
+    const lineLabel = line || 'N/A'
+    const modelLabel = model || 'N/A'
+    const days = Number(req.body?.days)
+    if (!Number.isFinite(days) || days < 1 || days > 365) {
+      return res.status(400).json({ success: false, message: 'กรุณาระบุจำนวนวันที่ต้องการทำ PM (1–365)' })
     }
     if (!req.file) return res.status(400).json({ success: false, message: 'กรุณาเลือกไฟล์เอกสาร 4M' })
+    await syncPmStatuses()
 
-    const fixtures = await flattenFixtureDetails({ line, model, status: 'In Use,Maintenance' })
-    const overdue = fixtures.filter((fixture) => pmOverdueDays(fixture) > 7)
+    const fixtures = await flattenFixtureDetails({ status: 'In Use,PM,PM Pending,Maintenance' })
+    const overdue = fixtures
+      .filter((fixture) => groupValue(fixture.line) === line && groupValue(fixture.model) === model)
+      .filter((fixture) => pmOverdueDays(fixture) > 3)
     if (!overdue.length) {
       return res.status(400).json({
         success: false,
-        message: `ไม่มี Fixture ใน Line ${line} / Model ${model} ที่เกินกำหนด PM มากกว่า 7 วัน`,
+        message: `ไม่มี Fixture ใน Line ${lineLabel} / Model ${modelLabel} ที่เกินกำหนด PM มากกว่า 3 วัน`,
       })
     }
 
+    const needsApproval = days > 7
     const url = `/uploads/pm/${req.file.filename}`
     for (const fixture of overdue) {
-      await updateFixtureBySn(fixture.sn, {
+      const set = {
         pmForms: [...(Array.isArray(fixture.pmForms) ? fixture.pmForms : []), url],
-      })
+        pmRequestedDays: days,
+        pmApproval: needsApproval ? 'Pending' : 'NotRequired',
+        pmApprovedBy: '',
+        pmApprovedAt: '',
+      }
+      // A fixture already being repaired must not be pushed backwards.
+      if (fixture.status !== 'Maintenance') {
+        set.status = needsApproval ? 'PM Pending' : 'PM'
+      }
+      await updateFixtureBySn(fixture.sn, set)
       await recordHistory(
         {
           sn: fixture.sn,
           request_id: '',
-          action: '4M Document',
-          detail: `แนบเอกสาร 4M ประจำ Line ${line} / Model ${model}: ${req.file.originalname}`,
-          line,
-          model,
+          action: needsApproval ? '4M Approval Request' : '4M Document',
+          detail: `แนบเอกสาร 4M ประจำ Line ${lineLabel} / Model ${modelLabel} · ขอทำ PM ${days} วัน${needsApproval ? ' → รอ Admin อนุมัติ' : ''}: ${req.file.originalname}`,
+          line: lineLabel,
+          model: modelLabel,
         },
         req.body?.user,
       )
@@ -2552,11 +2734,101 @@ app.post(
     return res.json({
       success: true,
       url,
-      line,
-      model,
+      line: lineLabel,
+      model: modelLabel,
       count: overdue.length,
       sns: overdue.map((fixture) => fixture.sn),
       originalName: req.file.originalname,
+      days,
+      needsApproval,
+      message: needsApproval
+        ? `แนบ 4M ให้ ${overdue.length} ตัวแล้ว · ขอ PM ${days} วัน — รอ Admin อนุมัติก่อนเข้าซ่อม`
+        : `แนบ 4M ให้ ${overdue.length} ตัวแล้ว · กำหนด PM ${days} วัน — พร้อมกดกำลังทำ PM`,
+    })
+  }),
+)
+
+/* Start PM: PM -> Maintenance (single fixture, used by the "กำลังทำ PM" button) */
+app.post(
+  '/api/pm/start',
+  asyncRoute(async (req, res) => {
+    const sn = text(req.body?.sn)
+    const fixture = await findFixture(sn)
+    if (!fixture) return res.status(404).json({ success: false, message: 'ไม่พบ Serial Number นี้' })
+    if (fixture.status === 'PM Pending') {
+      return res.status(409).json({ success: false, message: 'Fixture นี้รอ Admin อนุมัติ PM อยู่ — ยังเริ่ม PM ไม่ได้' })
+    }
+    if (fixture.status !== 'PM') {
+      return res.status(409).json({ success: false, message: `${sn} ไม่ได้อยู่ในสถานะ PM (ปัจจุบัน: ${fixture.status})` })
+    }
+    const guard = await assertFixtureEditable(sn)
+    if (guard) return res.status(guard.status).json({ success: false, message: guard.message, ...guard })
+    if (Number(fixture.pmRequestedDays) > 7 && fixture.pmApproval !== 'Approved') {
+      return res.status(409).json({ success: false, message: 'PM เกิน 7 วันต้องได้รับการอนุมัติจาก Admin ก่อน' })
+    }
+    const pmDate = text(req.body?.date) || todayInput()
+    const pmRunId = pmRunKey(fixture.line, fixture.model, pmDate)
+    await updateFixtureBySn(sn, { status: 'Maintenance', pmDate, pmRunId })
+    await recordHistory(
+      {
+        sn,
+        action: 'Start PM',
+        detail: `เริ่มทำ PM ${pmDate} → PM & Maintenance`,
+        line: fixture.line,
+        model: fixture.model,
+        pm_run_id: pmRunId,
+      },
+      req.body?.user,
+    )
+    return res.json({ success: true, message: `${sn} → Maintenance · เริ่มทำ PM ${pmDate}` })
+  }),
+)
+
+/* Admin approve / reject a PM request longer than 7 days */
+app.post(
+  '/api/pm/approve',
+  asyncRoute(async (req, res) => {
+    const sn = text(req.body?.sn)
+    const action = text(req.body?.action)
+    if (!['approve', 'reject'].includes(action)) {
+      return res.status(400).json({ success: false, message: 'action ต้องเป็น approve หรือ reject' })
+    }
+    if (!isAdmin(req.body?.user)) {
+      return res.status(403).json({ success: false, message: 'เฉพาะ Admin เท่านั้นที่อนุมัติ PM ได้' })
+    }
+    const fixture = await findFixture(sn)
+    if (!fixture) return res.status(404).json({ success: false, message: 'ไม่พบ Serial Number นี้' })
+    if (fixture.status !== 'PM Pending') {
+      return res.status(409).json({ success: false, message: `${sn} ไม่ได้รออนุมัติ PM (ปัจจุบัน: ${fixture.status})` })
+    }
+
+    const approved = action === 'approve'
+    const actor = personFrom(req.body?.user || {})
+    const pmRunId = approved ? pmRunKey(fixture.line, fixture.model, todayInput()) : ''
+    await updateFixtureBySn(sn, {
+      status: approved ? 'Maintenance' : 'PM',
+      pmApproval: approved ? 'Approved' : 'Rejected',
+      pmApprovedBy: [actor.empId, actor.name, actor.lastname].filter(Boolean).join(' ') || 'Admin',
+      pmApprovedAt: new Date().toISOString(),
+      pmDate: approved ? todayInput() : '',
+      pmRunId,
+    })
+    await recordHistory(
+      {
+        sn,
+        action: approved ? 'PM Approve' : 'PM Reject',
+        detail: `Admin ${approved ? 'อนุมัติ' : 'ปฏิเสธ'} PM ${Number(fixture.pmRequestedDays) || 0} วัน${approved ? ' → Maintenance' : ' → กลับเป็น PM'}`,
+        line: fixture.line,
+        model: fixture.model,
+        pm_run_id: pmRunId,
+      },
+      req.body?.user,
+    )
+    return res.json({
+      success: true,
+      message: approved
+        ? `${sn} อนุมัติ PM ${Number(fixture.pmRequestedDays) || 0} วัน — เข้าสู่ Maintenance แล้ว`
+        : `${sn} ปฏิเสธ PM — กลับไปรอทำ PM`,
     })
   }),
 )
@@ -2612,97 +2884,190 @@ app.get(
   }),
 )
 
-/* Verify + Record: OK -> Reset Due (+ auto print sticker)
+/* Verify + Record: OK -> In Stock (new 90-day clock starts on the next issue)
    NG -> Need Scrape -> Need PR -> Already have PR -> New One Replacement */
+const NG_OUTCOME_STATUS = {
+  'Need Scrape': 'Scrape',
+  'Need PR': 'PR',
+  'Already have PR': 'PR Ready',
+  'New One Replacement': 'Replaced',
+}
+
+const verifyMaintenanceFixture = async (sn, result, outcome, user) => {
+  const fixture = await findFixture(sn)
+  if (!fixture) {
+    return { ok: false, status: 404, sn, message: 'ไม่พบ Serial Number นี้' }
+  }
+  const guard = await assertFixtureEditable(sn)
+  if (guard) {
+    return { ok: false, status: guard.status, sn, message: guard.message }
+  }
+  if (fixture.status !== 'Maintenance') {
+    return {
+      ok: false,
+      status: 409,
+      sn,
+      message: `${sn} ไม่ได้อยู่ในคิว Maintenance (ปัจจุบัน: ${fixture.status})`,
+    }
+  }
+  const pmRunId = text(fixture.pmRunId)
+
+  if (result === 'OK') {
+    await updateFixtureBySn(sn, {
+      status: 'In Stock',
+      pmDate: '',
+      pmRunId: '',
+      pmRequestedDays: 0,
+      pmApproval: '',
+      pmApprovedBy: '',
+      pmApprovedAt: '',
+      'usage.inUseAt': '',
+      'usage.exp': '',
+      'usage.current': 0,
+      'usage.usedLine': '',
+      'usage.currentModel': '',
+      'usage.changeModel': '',
+    })
+    await recordHistory(
+      {
+        sn,
+        action: 'PM OK',
+        detail: 'Verify + Record OK — กลับเข้า In Stock (รอจ่ายออกเพื่อเริ่ม PM รอบใหม่)',
+        line: fixture.line,
+        model: fixture.model,
+        pm_run_id: pmRunId,
+      },
+      user,
+    )
+    return {
+      ok: true,
+      sn,
+      result: 'OK',
+      fixture: await findFixture(sn),
+      message: `PM ผ่าน — ${sn} กลับเข้า In Stock แล้ว (รอจ่ายออกเพื่อเริ่ม PM รอบใหม่)`,
+    }
+  }
+
+  if (result === 'NG') {
+    if (!NG_OUTCOME_STATUS[outcome]) {
+      return {
+        ok: false,
+        status: 400,
+        sn,
+        message: 'outcome ต้องเป็น Need Scrape / Need PR / Already have PR / New One Replacement',
+      }
+    }
+    await updateFixtureBySn(sn, {
+      status: NG_OUTCOME_STATUS[outcome],
+      pmDate: '',
+      pmRunId: '',
+      pmRequestedDays: 0,
+      pmApproval: '',
+      pmApprovedBy: '',
+      pmApprovedAt: '',
+      orderStatus: 'Pending',
+      orderNote: outcome,
+    })
+    await recordHistory(
+      {
+        sn,
+        action: 'PM NG',
+        detail: `Verify + Record NG — ${outcome}`,
+        line: fixture.line,
+        model: fixture.model,
+        pm_run_id: pmRunId,
+      },
+      user,
+    )
+    return {
+      ok: true,
+      sn,
+      result: 'NG',
+      outcome,
+      fixture: await findFixture(sn),
+      message:
+        outcome === 'New One Replacement'
+          ? `${sn} → New One Replacement — ไปที่ Order เพื่อลงทะเบียนตัวแทน`
+          : `${sn} → ${outcome}`,
+    }
+  }
+
+  return { ok: false, status: 400, sn, message: 'result ต้องเป็น OK หรือ NG' }
+}
+
 app.post(
   '/api/maintenance/verify',
   asyncRoute(async (req, res) => {
-    const sn = text(req.body?.sn)
     const result = text(req.body?.result)
-    const body = req.body || {}
+    const verified = await verifyMaintenanceFixture(
+      text(req.body?.sn),
+      result,
+      text(req.body?.outcome),
+      req.body?.user,
+    )
+    if (!verified.ok) {
+      return res.status(verified.status).json({ success: false, message: verified.message, sn: verified.sn })
+    }
+    return res.json({
+      success: true,
+      result: verified.result,
+      ...(verified.result === 'NG' ? { outcome: verified.outcome } : {}),
+      fixture: verified.fixture,
+      message: verified.message,
+    })
+  }),
+)
 
-    const fixture = await findFixture(sn)
-    if (!fixture) return res.status(404).json({ success: false, message: 'ไม่พบ Serial Number นี้' })
-    const guard = await assertFixtureEditable(sn)
-    if (guard) return res.status(guard.status).json({ success: false, message: guard.message, ...guard })
-    if (fixture.status !== 'Maintenance') {
+/* Bulk Verify from the grouped PM & Maintenance queue. Every SN is checked
+ * independently; a blocked SN is skipped and reported instead of failing all. */
+app.post(
+  '/api/maintenance/verify/bulk',
+  asyncRoute(async (req, res) => {
+    const sns = Array.isArray(req.body?.sns)
+      ? [...new Set(req.body.sns.map(text).filter(Boolean))]
+      : []
+    if (!sns.length) {
+      return res.status(400).json({ success: false, message: 'กรุณาเลือก Fixture ที่ต้อง Verify' })
+    }
+    const result = text(req.body?.result)
+    if (!['OK', 'NG'].includes(result)) {
+      return res.status(400).json({ success: false, message: 'result ต้องเป็น OK หรือ NG' })
+    }
+    const outcome = text(req.body?.outcome)
+    if (result === 'NG' && !NG_OUTCOME_STATUS[outcome]) {
+      return res.status(400).json({
+        success: false,
+        message: 'outcome ต้องเป็น Need Scrape / Need PR / Already have PR / New One Replacement',
+      })
+    }
+
+    const processed = []
+    const skipped = []
+    for (const sn of sns) {
+      const verified = await verifyMaintenanceFixture(sn, result, outcome, req.body?.user)
+      if (verified.ok) processed.push({ sn, message: verified.message })
+      else skipped.push({ sn, message: verified.message })
+    }
+
+    if (!processed.length) {
       return res.status(409).json({
         success: false,
-        message: `${sn} ไม่ได้อยู่ในคิว Maintenance (ปัจจุบัน: ${fixture.status})`,
+        processed,
+        skipped,
+        message: skipped[0]?.message || 'ไม่มี Fixture ที่ Verify ได้',
       })
     }
 
-    if (result === 'OK') {
-      const newExp = text(body.newExp) || ''
-      await updateFixtureBySn(sn, {
-        status: 'In Use',
-        pmDate: '',
-        'usage.inUseAt': todayInput(),
-        'usage.exp': newExp,
-        'usage.current': 0,
-      })
-      await recordHistory(
-        {
-          sn,
-          action: 'PM OK',
-          detail: `Verify + Record OK — Reset Due${newExp ? ` ถึง ${newExp}` : ''} · Auto Print Sticker`,
-          line: fixture.line,
-          model: fixture.model,
-        },
-        body.user,
-      )
-      return res.json({
-        success: true,
-        result: 'OK',
-        fixture: await findFixture(sn),
-        message: `PM ผ่าน — Reset Due ${newExp || '-'} และพิมพ์ sticker ให้แล้ว`,
-      })
-    }
-
-    if (result === 'NG') {
-      const outcome = text(body.outcome)
-      const statusMap = {
-        'Need Scrape': 'Scrape',
-        'Need PR': 'PR',
-        'Already have PR': 'PR Ready',
-        'New One Replacement': 'Replaced',
-      }
-      if (!statusMap[outcome]) {
-        return res.status(400).json({
-          success: false,
-          message: 'outcome ต้องเป็น Need Scrape / Need PR / Already have PR / New One Replacement',
-        })
-      }
-
-      await updateFixtureBySn(sn, {
-        status: statusMap[outcome],
-        pmDate: '',
-        orderStatus: 'Pending',
-        orderNote: outcome,
-      })
-      await recordHistory(
-        {
-          sn,
-          action: 'PM NG',
-          detail: `Verify + Record NG — ${outcome}`,
-          line: fixture.line,
-          model: fixture.model,
-        },
-        body.user,
-      )
-      return res.json({
-        success: true,
-        result: 'NG',
-        outcome,
-        fixture: await findFixture(sn),
-        message:
-          outcome === 'New One Replacement'
-            ? `${sn} → New One Replacement — ไปที่ Order เพื่อลงทะเบียนตัวแทน`
-            : `${sn} → ${outcome}`,
-      })
-    }
-
-    return res.status(400).json({ success: false, message: 'result ต้องเป็น OK หรือ NG' })
+    return res.json({
+      success: true,
+      result,
+      count: processed.length,
+      processed,
+      skipped,
+      message: result === 'OK'
+        ? `Verify OK ${processed.length} ตัว — กลับเข้า In Stock แล้ว`
+        : `Verify NG ${processed.length} ตัว — ${outcome}`,
+    })
   }),
 )
 
@@ -2820,6 +3185,7 @@ app.post(
 app.get(
   '/api/dashboard',
   asyncRoute(async (_req, res) => {
+    await syncPmStatuses()
     const fixtures = await flattenFixtureDetails()
     const counts = {}
     const lineMap = new Map()
@@ -3063,12 +3429,34 @@ app.get(
 /* History                                                             */
 /* ------------------------------------------------------------------ */
 
+/* History has two business sections. Keep the action sets here so the API can
+ * filter server-side and the UI can show the same split without guessing. */
+const HISTORY_SECTION_ACTIONS = {
+  order: [
+    'Register', 'Request', 'Accept', 'Hold', 'Reject', 'Complete',
+    'Issue', 'Issue (Scan)', 'Breakdown', 'Issue Spare',
+    'Verify', 'Return', 'Return (Verify)', 'Edit', 'Delete', 'Order',
+  ],
+  pm: [
+    'PM Due', '4M Document', '4M Approval Request', '4M Approve', '4M Assign',
+    'Plan PM', 'Start PM', 'PM Approve', 'PM Reject', 'PM OK', 'PM NG',
+  ],
+}
+
 app.get(
   '/api/history',
   asyncRoute(async (req, res) => {
     const filter = {}
+    const section = text(req.query.section)
+    if (HISTORY_SECTION_ACTIONS[section]) {
+      filter.action = { $in: HISTORY_SECTION_ACTIONS[section] }
+    }
     if (req.query.sn) filter.sn = text(req.query.sn)
-    if (req.query.action) filter.action = text(req.query.action)
+    if (req.query.action) {
+      filter.action = section && HISTORY_SECTION_ACTIONS[section]
+        ? { $in: [text(req.query.action)] }
+        : text(req.query.action)
+    }
     if (req.query.request_id) filter.request_id = text(req.query.request_id)
     const limit = Math.min(Number(req.query.limit) || 200, 1000)
     let data = await History.find(filter).sort({ date: -1 }).limit(limit).lean()

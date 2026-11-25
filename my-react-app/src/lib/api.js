@@ -130,6 +130,7 @@ export const api = {
   /* FAN2 external data */
   fan2Locations: (signal) => request('/fan2/locations', { signal }),
   fan2Models: (signal) => request('/fan2/models', { signal }),
+  fan2Machines: (signal) => request('/fan2/machines', { signal }),
 
   /* Storage management (Edit page) */
   storages: (signal) => request('/storages', { signal }),
@@ -183,6 +184,10 @@ export const api = {
   pm: (signal) => request('/pm', { signal }),
   pmPlan: (line, model, user, date, note) =>
     request('/pm/plan', { method: 'POST', body: { line, model, user, date, note } }),
+  pmStart: (sn, user, date) =>
+    request('/pm/start', { method: 'POST', body: { sn, user, date } }),
+  pmApprove: (sn, action, user) =>
+    request('/pm/approve', { method: 'POST', body: { sn, action, user } }),
   pmExtend: (sn, days, user, formUrl) =>
     request('/pm/extend', { method: 'POST', body: { sn, days, user, formUrl } }),
   pmAssign: (sn, payload = {}) => request('/pm/assign', { method: 'POST', body: { sn, ...payload } }),
@@ -198,10 +203,11 @@ export const api = {
     }
     return payload
   },
-  pmUploadGroup: async (line, model, file, user) => {
+  pmUploadGroup: async (line, model, file, days, user) => {
     const form = new FormData()
     form.append('line', line)
     form.append('model', model)
+    form.append('days', String(days))
     if (user) form.append('user', JSON.stringify(user))
     form.append('file', file)
     const response = await fetch(`${API_BASE}/pm/forms/group`, { method: 'POST', body: form })
@@ -215,6 +221,8 @@ export const api = {
   /* PM & Maintenance -> Verify + Record */
   maintenance: (signal) => request('/maintenance', { signal }),
   maintenanceVerify: (payload) => request('/maintenance/verify', { method: 'POST', body: payload }),
+  maintenanceVerifyBulk: (payload) =>
+    request('/maintenance/verify/bulk', { method: 'POST', body: payload }),
 
   /* Order (Need Scrape / Need PR / Already have PR / New One Replacement) - read-only */
   orders: (signal) => request('/orders', { signal }),
@@ -223,9 +231,9 @@ export const api = {
   dashboard: (signal) => request('/dashboard', { signal }),
 
   /* History (Record History) */
-  history: ({ sn, action, requestId, q, limit, signal } = {}) =>
+  history: ({ sn, action, requestId, q, section, limit, signal } = {}) =>
     request(
-      withQuery('/history', { sn, action, request_id: requestId, q, limit }),
+      withQuery('/history', { sn, action, request_id: requestId, q, section, limit }),
       { signal },
     ),
 

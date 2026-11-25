@@ -38,12 +38,16 @@ export default function LoginPage({ onLogin }) {
       localStorage.setItem(SESSION.lastName, result.lastName || '')
       localStorage.setItem(SESSION.role, result.role || '')
       localStorage.setItem(SESSION.dept, result.dept || '')
+      localStorage.setItem(SESSION.status, result.status || '')
+      localStorage.setItem(SESSION.requestId, result.requestId || '')
       onLogin({
         name: result.name,
         userId: result.userId,
         lastName: result.lastName,
         role: result.role,
         dept: result.dept,
+        status: result.status,
+        requestId: result.requestId,
       })
       toast.success(`${t('ยินดีต้อนรับ', 'Welcome')} ${result.name || result.userId}`, {
         title: t('เข้าสู่ระบบสำเร็จ', 'Login successful'),
@@ -71,7 +75,7 @@ export default function LoginPage({ onLogin }) {
         dept: form.dept.trim(),
       })
       toast.success(
-        t('ลงทะเบียนสำเร็จ กรุณารอการอนุมัติจากผู้ดูแล', 'Registration successful. Please wait for administrator approval'),
+        t('ลงทะเบียนสำเร็จ กรุณารอการลงนามจากผู้ดูแล', 'Registration successful. Please wait for the administrator to sign your account'),
         { title: t('ลงทะเบียนสำเร็จ', 'Registration successful') },
       )
       setMode('login')

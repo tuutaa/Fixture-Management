@@ -1,16 +1,21 @@
 import { useState } from 'react'
 import { LogOut, Menu, Wrench, X } from 'lucide-react'
 import { cn, initials } from '../lib/format'
-import { ROLE } from '../lib/constants'
-import { ALL_NAV_ITEMS, NAV_GROUPS } from '../lib/navigation'
+import { ALL_NAV_ITEMS, isAdminUser, isPageAllowed, NAV_GROUPS } from '../lib/navigation'
 import { useLanguage } from '../context/LanguageContext'
 import LanguageSwitcher from './LanguageSwitcher'
 
 export default function AppShell({ user, page, onNavigate, onLogout, children }) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const { t } = useLanguage()
-  const isAdmin = ROLE.isAdmin(user?.role)
+  const isAdmin = isAdminUser(user)
   const active = ALL_NAV_ITEMS.find((item) => item.key === page) || ALL_NAV_ITEMS[0]
+  const visibleGroups = NAV_GROUPS
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => isPageAllowed(item.key, user)),
+    }))
+    .filter((group) => group.items.length > 0)
   const displayName = [user?.name, user?.lastName].filter(Boolean).join(' ')
     || user?.userId || t('ผู้ใช้', 'User')
 
@@ -59,7 +64,7 @@ export default function AppShell({ user, page, onNavigate, onLogout, children })
         </div>
 
         <nav className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 py-4">
-          {NAV_GROUPS.map((group) => (
+          {visibleGroups.map((group) => (
             <div key={group.labelEn}>
               <div className="px-3 pb-2">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">

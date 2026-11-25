@@ -41,6 +41,7 @@ import { cn, daysUntil, formatDate, formatDateTime, toDateInput } from '../lib/f
 import { useLabels, useServerMessage } from '../lib/i18n'
 
 const EMPTY_FILTERS = {
+  sn: '',
   line: '',
   model: '',
   status: '',
@@ -121,7 +122,7 @@ const positionsForProcess = (options, processValue) => {
   return valuesFor(options, 'positions')
 }
 
-/* Mirrors the server 4M guard: overdue > 7 days with no attached pmForms.
+/* Mirrors the server 4M guard: overdue > 3 days with no attached pmForms.
  * Prefer an explicit server flag; otherwise derive it from usage.exp. */
 const fixture4MBlock = (row) => {
   if (!row) return null
@@ -129,7 +130,7 @@ const fixture4MBlock = (row) => {
   const overdueDays = days === null ? 0 : Math.max(0, -days)
   const hasForms = Array.isArray(row.pmForms) && row.pmForms.length > 0
   const needs4M =
-    typeof row.needs4M === 'boolean' ? row.needs4M : overdueDays > 7 && !hasForms
+    typeof row.needs4M === 'boolean' ? row.needs4M : overdueDays > 3 && !hasForms
   if (!needs4M) return null
   const reportedDays = Number(row.pmOverdueDays)
   return {
@@ -449,6 +450,12 @@ export default function EditFixturePage({ user }) {
 
   // Shared by Fixture and Due Date tabs — only the Process → Position options differ.
   const buildFilterFields = (positionOptions) => [
+    {
+      key: 'sn',
+      label: t('SN', 'SN'),
+      kind: 'text',
+      placeholder: t('พิมพ์ SN บางส่วน…', 'Type part of the SN…'),
+    },
     { key: 'line', label: t('Line', 'Line'), options: lineFilterOptions },
     { key: 'model', label: t('Model', 'Model'), options: modelFilterOptions },
     { key: 'status', label: t('สถานะ', 'Status'), options: statusFilterOptions },
@@ -855,24 +862,33 @@ export default function EditFixturePage({ user }) {
   ]
 
   const renderFilterCard = ({ values, fields, onFilter, onSearch, onClear, loading, error, note }) => (
-    <Card className="p-4 sm:p-5 lg:h-[500px]">
+    <Card className="p-4 sm:p-5 lg:h-[570px]">
       <SectionHeader
         icon={SlidersHorizontal}
         title={t('กรองข้อมูล Fixture', 'Filter fixtures')}
-        desc={t('ทุกช่องเป็น dropdown ที่มีข้อมูลจาก fixtureDetail — SN ค้นหาได้จากตาราง', 'Every field is a populated dropdown — find SN in the result table')}
+        desc={t('กรองได้ทุกช่อง รวมช่อง SN — พิมพ์บางส่วนของ SN แล้วกด Search', 'Filter by any field, including SN — type part of the SN then press Search')}
         className="mb-4"
       />
       <div className="grid gap-3 sm:grid-cols-2">
         {fields.map((field) => (
-          <FormField key={field.key} label={field.label}>
-            <SearchableSelect
-              size="sm"
-              value={values[field.key]}
-              onChange={(value) => onFilter(field.key, value)}
-              options={field.options}
-              placeholder={t('ทั้งหมด', 'All')}
-              clearable
-            />
+          <FormField key={field.key} label={field.label} className={field.kind === 'text' ? 'sm:col-span-2' : ''}>
+            {field.kind === 'text' ? (
+              <Input
+                className="font-mono"
+                value={values[field.key] || ''}
+                onChange={(event) => onFilter(field.key, event.target.value)}
+                placeholder={field.placeholder}
+              />
+            ) : (
+              <SearchableSelect
+                size="sm"
+                value={values[field.key]}
+                onChange={(value) => onFilter(field.key, value)}
+                options={field.options}
+                placeholder={t('ทั้งหมด', 'All')}
+                clearable
+              />
+            )}
           </FormField>
         ))}
       </div>
@@ -951,7 +967,7 @@ export default function EditFixturePage({ user }) {
             })}
 
             {/* 2. Result table only — same flat columns as Fixture List > Fixture, capped to filter height */}
-            <Card className="flex min-w-0 flex-col overflow-hidden lg:h-[500px]">
+            <Card className="flex min-w-0 flex-col overflow-hidden lg:h-[570px]">
               <div className="min-h-0 flex-1 overflow-y-auto">
                 {resultsLoading ? (
                   <Spinner label={t('กำลังโหลดข้อมูล Fixture…', 'Loading fixture data…')} />
@@ -1327,7 +1343,7 @@ export default function EditFixturePage({ user }) {
               error: dueResultsError,
               note: t('เลือก Fixture ในตาราง แล้วกำหนด Exp ร่วมกันด้านล่าง', 'Check fixtures in the table, then set one shared exp date below'),
             })}
-            <Card className="flex min-w-0 flex-col overflow-hidden lg:h-[500px]">
+            <Card className="flex min-w-0 flex-col overflow-hidden lg:h-[570px]">
               <div className="min-h-0 flex-1 overflow-y-auto">
                 {dueResultsLoading ? (
                   <Spinner label={t('กำลังโหลดข้อมูล Fixture…', 'Loading fixture data…')} />

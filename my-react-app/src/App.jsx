@@ -2,7 +2,13 @@ import { useCallback, useMemo, useState } from 'react'
 import AppShell from './components/AppShell'
 import { ToastProvider } from './components/ui/Toast'
 import LanguageSwitcher from './components/LanguageSwitcher'
-import { ALL_NAV_ITEMS, DEFAULT_PAGE } from './lib/navigation'
+import {
+  ALL_NAV_ITEMS,
+  allowedPagesFor,
+  DEFAULT_PAGE,
+  defaultPageFor,
+  isPageAllowed,
+} from './lib/navigation'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import RequestPage from './pages/RequestPage'
@@ -24,6 +30,7 @@ function readSession() {
       lastName: localStorage.getItem(SESSION.lastName) || '',
       role: localStorage.getItem(SESSION.role) || '',
       dept: localStorage.getItem(SESSION.dept) || '',
+      status: localStorage.getItem(SESSION.status) || '',
       requestId: localStorage.getItem(SESSION.requestId) || '',
     }
   } catch {
@@ -61,15 +68,18 @@ export default function App() {
   const [user, setUser] = useState(readSession)
   const [page, setPage] = useState(readPage)
 
+  const allowedPages = useMemo(() => allowedPagesFor(user), [user])
+  const landingPage = useMemo(() => defaultPageFor(user), [user])
   const validPage = useMemo(
-    () => (ALL_NAV_ITEMS.some((item) => item.key === page) ? page : DEFAULT_PAGE),
-    [page],
+    () => (allowedPages.includes(page) ? page : landingPage),
+    [allowedPages, landingPage, page],
   )
 
   const handleLogin = useCallback((session) => {
+    const nextPage = defaultPageFor(session)
     setUser(session)
-    setPage(DEFAULT_PAGE)
-    writePage(DEFAULT_PAGE)
+    setPage(nextPage)
+    writePage(nextPage)
   }, [])
 
   const handleLogout = useCallback(() => {
@@ -83,10 +93,11 @@ export default function App() {
   }, [])
 
   const navigate = useCallback((next) => {
+    if (!isPageAllowed(next, user)) return
     setPage(next)
     writePage(next)
     window.scrollTo({ top: 0, behavior: 'smooth' })
-  }, [])
+  }, [user])
 
   if (!user) {
     return (

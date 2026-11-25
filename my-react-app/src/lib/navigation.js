@@ -8,6 +8,7 @@ import {
   ShoppingCart,
   Wrench,
 } from 'lucide-react'
+import { ROLE } from './constants'
 
 export const NAV_GROUPS = [
   {
@@ -102,3 +103,24 @@ export const NAV_GROUPS = [
 
 export const ALL_NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items)
 export const DEFAULT_PAGE = 'dashboard'
+
+/* Signed users are shop-floor operators: Order + Request only. Admins keep
+ * the full navigation. Status comes from /api/login and is persisted locally. */
+export const SIGNED_ONLY_PAGES = ['order', 'request']
+export const SIGNED_DEFAULT_PAGE = 'order'
+
+export const isAdminUser = (user) =>
+  ROLE.isAdmin(user?.role) || /^admin$/i.test(String(user?.status || '').trim())
+
+export const isSignedOnlyUser = (user) =>
+  !isAdminUser(user) && /^signed$/i.test(String(user?.status || '').trim())
+
+export const allowedPagesFor = (user) =>
+  isSignedOnlyUser(user)
+    ? SIGNED_ONLY_PAGES
+    : ALL_NAV_ITEMS.map((item) => item.key)
+
+export const isPageAllowed = (page, user) => allowedPagesFor(user).includes(page)
+
+export const defaultPageFor = (user) =>
+  isSignedOnlyUser(user) ? SIGNED_DEFAULT_PAGE : DEFAULT_PAGE
