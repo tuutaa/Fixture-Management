@@ -124,3 +124,37 @@ export const isPageAllowed = (page, user) => allowedPagesFor(user).includes(page
 
 export const defaultPageFor = (user) =>
   isSignedOnlyUser(user) ? SIGNED_DEFAULT_PAGE : DEFAULT_PAGE
+
+/* Dashboard -> Fixture Detail hand-off. The focus is kept in memory + storage
+ * until the destination page has initialised its filters, so React StrictMode's
+ * double effect run cannot consume it before the first real render. */
+const FIXTURE_FOCUS_KEY = 'dashboardFixtureFocus'
+let pendingFixtureFocus = null
+
+export function setFixtureFocus(focus) {
+  pendingFixtureFocus = focus || {}
+  try {
+    localStorage.setItem(FIXTURE_FOCUS_KEY, JSON.stringify(pendingFixtureFocus))
+  } catch {
+    /* ignore */
+  }
+}
+
+export function peekFixtureFocus() {
+  if (pendingFixtureFocus) return pendingFixtureFocus
+  try {
+    const raw = localStorage.getItem(FIXTURE_FOCUS_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+export function clearFixtureFocus() {
+  pendingFixtureFocus = null
+  try {
+    localStorage.removeItem(FIXTURE_FOCUS_KEY)
+  } catch {
+    /* ignore */
+  }
+}

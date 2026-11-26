@@ -1,63 +1,92 @@
 /*
- * Direction contract — Light analytics control center
- * THESIS: a read-only factory operations canvas where the whole state of the
- * factory is legible in a single viewport; no action controls live in the
- * dashboard content.
- * OWN-WORLD: white/slate panels, one indigo signal accent, semantic
- * emerald/amber/rose status color, compact bar graphics, tabular numerals.
- * STORY: total fleet → live utilization → pressure points → ranked breakdown
- * hotspots → the requests behind the numbers.
- * FIRST VIEWPORT: slim header band, eight KPI tiles, then four compact panels
- * covering line utilization, request flow, priority radar and process/latest.
- * FORM: pinned user direction — analytics control center; seed-key: pinned-light-analytics.
- * FINISH: read-only main, all summary panels visible without page scrolling;
- * chart data comes only from /api/dashboard.
+ * Dashboard — read-only factory operations overview.
+ * All numbers come from the single /api/dashboard response (real API or mock).
+ * Expiry uses usage.exp; PM uses pmStartDate/pmDueDate. The two rules stay separate.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Activity,
   AlertTriangle,
-  ArrowUpRight,
   Boxes,
   CalendarClock,
-  ClipboardList,
-  Gauge,
-  Layers3,
-  PackageSearch,
-  Sparkles,
-  TrendingUp,
+  PackageCheck,
+  RefreshCw,
   Wrench,
 } from 'lucide-react'
 import api from '../lib/api'
-import { Card, ErrorState, Spinner } from '../components/ui/Card'
-import { RequestStatusBadge } from '../components/ui/Badge'
-import { cn, formatDate } from '../lib/format'
+import { Card, ErrorState, PageHeader, Spinner, StatCard } from '../components/ui/Card'
+import Button from '../components/ui/Button'
+import { FixtureStatusBadge } from '../components/ui/Badge'
+import { cn, formatDate, formatDateTime } from '../lib/format'
 import { useLabels, useServerMessage } from '../lib/i18n'
-import {
-  PROCESS_TYPES,
-  REQUEST_STATUSES,
-} from '../lib/constants'
+import { setFixtureFocus } from '../lib/navigation'
 
-const ACTIVE_REQUEST_STATUSES = new Set(['Waiting', 'Progress', 'Hold', 'Verify'])
-const NG_STATUSES = ['Scrape', 'PR', 'PR Ready', 'Replaced']
-const PM_OVERDUE_STATES = new Set(['over-due', 'overdue-remind'])
-
+/* Order-card badge palette: Waiting / Progress / Hold / Verify-Done.
+ * Expired → red, In Use → blue, Maintenance → orange, In Stock → emerald. */
 const COLORS = {
-  indigo: '#4f46e5',
-  blue: '#0ea5e9',
-  emerald: '#10b981',
-  amber: '#f59e0b',
-  rose: '#f43f5e',
-  violet: '#8b5cf6',
-  slate: '#94a3b8',
+  red: '#dc2626', // red-600     — Waiting / Expired
+  blue: '#2563eb', // blue-600    — Progress / In Use
+  orange: '#f97316', // orange-500  — Hold / Maintenance / within 7 days
+  emerald: '#059669', // emerald-600 — Verify / Done / In Stock / Normal
+  amber: '#f59e0b', // amber-500   — within 3 days
+  slate: '#94a3b8', // slate-400   — Other / no data
 }
 
-const STATUS_COLORS = {
-  Waiting: COLORS.rose,
-  Progress: COLORS.blue,
-  Hold: COLORS.amber,
-  Verify: COLORS.violet,
-  Done: COLORS.emerald,
+const ACTION_LABELS = {
+  Register: ['ลงทะเบียน Fixture', 'Fixture registered'],
+  Request: ['สร้างคำขอ', 'Request created'],
+  Accept: ['รับงาน', 'Request accepted'],
+  Hold: ['พักงาน', 'Request put on hold'],
+  Reject: ['ปฏิเสธคำขอ', 'Request rejected'],
+  Complete: ['เสร็จคำขอ', 'Request completed'],
+  Issue: ['จ่าย Fixture', 'Fixture issued'],
+  'Issue (Scan)': ['จ่าย Fixture (สแกน)', 'Fixture issued (scan)'],
+  'Issue Spare': ['จ่าย Fixture สำรอง', 'Spare issued'],
+  Breakdown: ['แจ้ง Fixture เสีย', 'Breakdown reported'],
+  Verify: ['ตรวจสอบ Order', 'Order verified'],
+  Return: ['คืน Fixture', 'Fixture returned'],
+  'Return (Verify)': ['คืน Fixture (ตรวจสอบ)', 'Fixture returned (verify)'],
+  'Maintenance Pending': ['รอ Maintenance', 'Maintenance pending'],
+  'Maintenance Done': ['Maintenance เสร็จ', 'Maintenance completed'],
+  'Verify (Requester)': ['Verify โดยผู้ขอ', 'Requester verified'],
+  'PM Due': ['ครบกำหนด PM', 'PM due'],
+  '4M Document': ['แนบเอกสาร 4M', '4M document'],
+  '4M Approval Request': ['ขออนุมัติ 4M', '4M approval requested'],
+  '4M Approve': ['อนุมัติ 4M', '4M approved'],
+  '4M Assign': ['มอบหมาย 4M', '4M assigned'],
+  'Plan PM': ['วางแผน PM', 'PM planned'],
+  'Start PM': ['เริ่มทำ PM', 'PM started'],
+  'PM Approve': ['Admin อนุมัติ PM', 'PM approved'],
+  'PM Reject': ['Admin ปฏิเสธ PM', 'PM rejected'],
+  'PM OK': ['PM เสร็จ (Verify OK)', 'PM completed'],
+  'PM NG': ['PM ไม่ผ่าน (Verify NG)', 'PM failed'],
+  Order: ['เปลี่ยนสถานะ Order', 'Order status changed'],
+  Edit: ['แก้ไขข้อมูล Fixture', 'Fixture edited'],
+  Delete: ['ลบ Fixture', 'Fixture deleted'],
+}
+
+const TONE_DOTS = {
+  blue: 'bg-blue-500',
+  emerald: 'bg-emerald-500',
+  orange: 'bg-orange-500',
+  red: 'bg-red-500',
+  slate: 'bg-slate-400',
+}
+
+const ACTION_TONES = {
+  Register: 'emerald',
+  Issue: 'blue',
+  'Issue (Scan)': 'blue',
+  'Issue Spare': 'blue',
+  Return: 'emerald',
+  'Return (Verify)': 'emerald',
+  'Maintenance Pending': 'orange',
+  'Maintenance Done': 'orange',
+  'Verify (Requester)': 'emerald',
+  'PM OK': 'emerald',
+  'PM Approve': 'emerald',
+  'PM NG': 'red',
+  'PM Reject': 'red',
 }
 
 const num = (value) => {
@@ -65,95 +94,41 @@ const num = (value) => {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-const countBy = (items = [], pick) => {
-  const counts = {}
-  for (const item of items) {
-    const key = pick(item)
-    if (!key) continue
-    counts[key] = (counts[key] || 0) + 1
-  }
-  return counts
+const pct = (value, total) => (total > 0 ? Math.round((num(value) / total) * 100) : 0)
+
+const remainingLabel = (days, t, ui) => {
+  if (days === null || days === undefined || !Number.isFinite(Number(days))) return ui('noDate')
+  const value = Number(days)
+  if (value < 0) return t(`เกิน ${Math.abs(value)} วัน`, `${Math.abs(value)} days overdue`)
+  if (value === 0) return ui('dueToday')
+  return t(`อีก ${value} วัน`, `${value} days left`)
 }
 
-const statusRows = (known, counts = {}, includeUnknown = true) => {
-  const seen = new Set()
-  const rows = []
-  for (const status of known) {
-    rows.push([status, num(counts[status])])
-    seen.add(status)
-  }
-  if (includeUnknown) {
-    for (const [status, count] of Object.entries(counts)) {
-      if (!seen.has(status)) rows.push([status, num(count)])
-    }
-  }
-  return rows
+const severityLabel = (severity, t, ui, fixtureStatus) => {
+  if (severity === 'expired') return ui('expiredKpi')
+  if (severity === 'expiring3') return ui('within3Days')
+  if (severity === 'pmOverdue') return ui('pmOverdue')
+  if (severity === 'maintenance') return fixtureStatus('Maintenance')
+  return t('สถานะผิดปกติ', 'Abnormal status')
 }
 
-const slotLabel = (slot) => {
-  if (!slot) return ''
-  const hour = Number(String(slot).split(':')[0])
-  if (!Number.isFinite(hour)) return String(slot)
-  return `${String(hour).padStart(2, '0')}:00–${String(hour + 1).padStart(2, '0')}:00`
+const activityLabel = (action, t) => {
+  const pair = ACTION_LABELS[action]
+  return pair ? t(pair[0], pair[1]) : action || '-'
 }
 
-const modelLabel = (request) => {
-  const from = request?.currentModel || '-'
-  const to = request?.changeModel || ''
-  return to ? `${from} → ${to}` : from
-}
+/* ------------------------------ Small parts ------------------------------ */
 
-const EmptyLine = ({ children }) => (
-  <p className="px-1 py-3 text-center text-[10px] font-semibold text-slate-400">{children}</p>
-)
-
-const StackedBar = ({ parts = [], scale = 100 }) => (
-  <div className="flex h-2 w-full overflow-hidden rounded-full bg-slate-100">
-    {parts.map((part, index) => (
-      <span
-        key={`${part.key || index}`}
-        className="h-full transition-all"
-        style={{ width: `${Math.min(100, Math.max(0, (num(part.value) / Math.max(1, scale)) * 100))}%`, backgroundColor: part.color }}
-      />
-    ))}
-  </div>
-)
-
-const CompactKpi = ({ label, value, hint, icon: Icon, color, meter = 0 }) => (
-  <div className="group relative min-w-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(15,23,42,0.03),0_12px_24px_-20px_rgba(15,23,42,0.35)]">
-    <div
-      className="pointer-events-none absolute -right-6 -top-8 h-20 w-20 rounded-full opacity-[0.08] blur-xl transition-transform duration-500 group-hover:scale-125"
-      style={{ backgroundColor: color }}
-    />
-    <div className="flex items-start justify-between gap-1">
-      <p className="min-w-0 truncate text-[8px] font-black uppercase tracking-[0.13em] text-slate-400">{label}</p>
-      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: `${color}18`, color }}>
-        <Icon className="h-3.5 w-3.5" strokeWidth={2.2} />
-      </span>
-    </div>
-    <p className="mt-1 text-[21px] font-black leading-none tracking-tight text-slate-900">
-      {value.toLocaleString()}
-    </p>
-    <p className="mt-1 truncate text-[9px] font-semibold text-slate-400">{hint}</p>
-    <div className="mt-1.5 h-0.5 overflow-hidden rounded-full bg-slate-100">
-      <div
-        className="h-full rounded-full transition-all"
-        style={{ width: `${Math.min(100, Math.max(0, meter))}%`, backgroundColor: color }}
-      />
-    </div>
-  </div>
-)
-
-const MiniPanel = ({ eyebrow, title, icon: Icon, children, className, action }) => (
-  <Card className={cn('flex min-h-0 min-w-0 flex-col rounded-2xl border-slate-200/80 bg-white p-3 shadow-[0_1px_2px_rgba(15,23,42,0.03),0_12px_28px_-24px_rgba(15,23,42,0.4)]', className)}>
+const MiniPanel = ({ eyebrow, title, icon: Icon, action, children, className }) => (
+  <Card className={cn('flex min-h-0 min-w-0 flex-col rounded-2xl border-slate-200/80 bg-white p-3 shadow-sm', className)}>
     <div className="mb-2 flex shrink-0 items-center gap-2">
       {Icon ? (
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
           <Icon className="h-3.5 w-3.5" strokeWidth={2.2} />
         </span>
       ) : null}
       <div className="min-w-0 flex-1">
-        {eyebrow ? <p className="text-[8px] font-black uppercase tracking-[0.14em] text-indigo-500">{eyebrow}</p> : null}
+        {eyebrow ? <p className="text-[8px] font-black uppercase tracking-[0.14em] text-blue-600">{eyebrow}</p> : null}
         <h2 className="truncate text-[11px] font-black text-slate-900">{title}</h2>
       </div>
       {action}
@@ -162,461 +137,375 @@ const MiniPanel = ({ eyebrow, title, icon: Icon, children, className, action }) 
   </Card>
 )
 
+const DonutChart = ({ segments, total, centerLabel }) => {
+  const radius = 42
+  const circumference = 2 * Math.PI * radius
+  const lengthOf = (segment) => (total > 0 ? (num(segment.value) / total) * circumference : 0)
+
+  return (
+    <div className="relative h-[142px] w-[142px] shrink-0">
+      <svg viewBox="0 0 100 100" className="h-full w-full" role="img" aria-label={centerLabel}>
+        <circle cx="50" cy="50" r={radius} fill="none" stroke="#e2e8f0" strokeWidth="11" />
+        {segments.map((segment, index) => {
+          const length = lengthOf(segment)
+          const dash = `${length} ${circumference - length}`
+          const offset = -segments.slice(0, index).reduce((sum, item) => sum + lengthOf(item), 0)
+          return (
+            <circle
+              key={segment.key}
+              cx="50"
+              cy="50"
+              r={radius}
+              fill="none"
+              stroke={segment.color}
+              strokeWidth="11"
+              strokeDasharray={dash}
+              strokeDashoffset={offset}
+              transform="rotate(-90 50 50)"
+            />
+          )
+        })}
+      </svg>
+      <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+        <span className="font-mono text-[19px] font-black leading-none text-slate-900">
+          {total.toLocaleString()}
+        </span>
+        <span className="mt-0.5 max-w-[92px] text-center text-[8px] font-bold uppercase leading-tight text-slate-400">
+          {centerLabel}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+const EmptyLine = ({ children }) => (
+  <p className="px-2 py-6 text-center text-[10px] font-semibold text-slate-400">{children}</p>
+)
+
 /* --------------------------------- Page -------------------------------- */
 
-export default function DashboardPage() {
-  const { t, ui, fixtureStatus, pmState, requestStatus, requestType } = useLabels()
+export default function DashboardPage({ onNavigate }) {
+  const { t, ui, fixtureStatus, pmState } = useLabels()
   const sm = useServerMessage()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (initial = false) => {
     try {
-      setLoading(true)
+      if (initial) setLoading(true)
+      else setRefreshing(true)
       setError('')
-      const result = await api.dashboard()
-      setData(result)
+      setData(await api.dashboard())
     } catch (err) {
       setError(err.message)
     } finally {
       setLoading(false)
+      setRefreshing(false)
     }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    load(true)
+  }, [load])
+
+  const openFixtures = useCallback(
+    (focus = {}) => {
+      setFixtureFocus(focus)
+      onNavigate?.('fixtures')
+    },
+    [onNavigate],
+  )
 
   const summary = useMemo(() => {
     const counts = data?.counts || {}
-    const requestCounts = data?.requestStats || {}
-    const requestTypeCounts = Object.keys(data?.requestTypeStats || {}).length
-      ? data.requestTypeStats
-      : countBy(data?.recentRequests || [], (item) => item.type)
-    const processCounts = Object.keys(data?.byProcess || {}).length
-      ? data.byProcess
-      : countBy(data?.recentRequests || [], (item) => item.requestType)
     const total = num(data?.total)
-    const ng = NG_STATUSES.reduce((sum, status) => sum + num(counts[status]), 0)
-    const requestTotal = Object.values(requestCounts).reduce((sum, value) => sum + num(value), 0)
-    const activeRequests = [...ACTIVE_REQUEST_STATUSES].reduce((sum, status) => sum + num(requestCounts[status]), 0)
-    const pmOverdue = (data?.pmAlerts || []).filter((fixture) =>
-      num(fixture.pmOverdueDays) > 0 || (fixture.pmStates || []).some((state) => PM_OVERDUE_STATES.has(state)),
-    ).length
-    const expiringSoon = num(data?.expiryStats?.expiringIn3Days)
     const expired = num(data?.expiryStats?.expired)
-    const inUse = num(counts['In Use'])
-
+    const pmAlerts = data?.pmAlerts || []
+    const pmStateCounts = data?.pmStateCounts || {}
     return {
-      counts,
-      requestCounts,
-      requestTypeCounts,
-      processCounts,
       total,
-      ng,
-      requestTotal,
-      activeRequests,
-      pmOverdue,
-      expiringSoon,
-      expired,
-      inUse,
+      inUse: num(counts['In Use']),
       stock: num(counts['In Stock']),
       maintenance: num(counts.Maintenance),
-      utilPercent: total ? Math.round((inUse / total) * 100) : 0,
-      requestRows: statusRows(REQUEST_STATUSES, requestCounts, false),
-      requestTypeRows: statusRows(Object.keys(requestTypeCounts), requestTypeCounts, false),
-      processRows: statusRows(PROCESS_TYPES.map((item) => item.value), processCounts, false),
+      expiringSoon: num(data?.expiryStats?.expiringIn3Days),
+      expired,
+      attentionCount: num(data?.attentionCount),
+      pmOverdue: pmAlerts.filter(
+        (row) => num(row.pmOverdueDays) > 0 || (row.pmStates || []).some((state) => state === 'over-due' || state === 'overdue-remind'),
+      ).length,
+      pmOnDue: num(pmStateCounts['on-due']),
+      pmPreAlert: num(pmStateCounts['pre-alert']),
     }
   }, [data])
 
-  const attention = useMemo(() => {
-    const relativeDays = (days) => {
-      if (!Number.isFinite(days)) return ''
-      if (days < 0) return t(`เกิน ${Math.abs(days)} วัน`, `${Math.abs(days)} days overdue`)
-      if (days === 0) return t('ครบกำหนดวันนี้', 'Due today')
-      return t(`อีก ${days} วัน`, `${days} days left`)
-    }
+  const statusSegments = useMemo(() => {
+    const source = data?.statusOverview || {}
+    return [
+      { key: 'expired', label: ui('expiredKpi'), value: num(source.expired), color: COLORS.red, focus: { expiry: 'expired' } },
+      { key: 'inUse', label: fixtureStatus('In Use'), value: num(source.inUse), color: COLORS.blue, focus: { status: 'In Use' } },
+      { key: 'inStock', label: fixtureStatus('In Stock'), value: num(source.inStock), color: COLORS.emerald, focus: { status: 'In Stock' } },
+      { key: 'maintenance', label: fixtureStatus('Maintenance'), value: num(source.maintenance), color: COLORS.orange, focus: { status: 'Maintenance' } },
+      { key: 'other', label: t('อื่นๆ', 'Other'), value: num(source.other), color: COLORS.slate, focus: {} },
+    ]
+  }, [data, fixtureStatus, t, ui])
 
-    const requests = (data?.dueRequests || [])
-      .filter((item) => !item.status || ACTIVE_REQUEST_STATUSES.has(item.status))
-      .map((item) => ({
-        id: `request-${item.request_id}`,
-        icon: CalendarClock,
-        title: item.request_id || '-',
-        subtitle: [requestType(item.type), item.currentModel, item.line].filter(Boolean).join(' · '),
-        relative: relativeDays(item.daysLeft),
-        urgency: Number.isFinite(item.daysLeft) ? item.daysLeft : 999,
-      }))
+  const expiryRows = useMemo(() => {
+    const source = data?.expiryOverview || {}
+    return [
+      { key: 'expired', label: ui('expiredKpi'), value: num(source.expired), color: COLORS.red, focus: { expiry: 'expired' } },
+      { key: 'within3', label: ui('within3Days'), value: num(source.within3), color: COLORS.amber, focus: { expiry: 'expiring3' } },
+      { key: 'within7', label: ui('within7Days'), value: num(source.within7), color: COLORS.orange, focus: { expiry: 'expiring7' } },
+      { key: 'normal', label: ui('normal'), value: num(source.normal), color: COLORS.emerald, focus: {} },
+    ]
+  }, [data, ui])
 
-    const pm = (data?.pmAlerts || [])
-      .filter((item) => num(item.pmOverdueDays) > 0 || (item.pmStates || []).some((state) => PM_OVERDUE_STATES.has(state)))
-      .map((item) => ({
-        id: `pm-${item.sn}`,
-        icon: Wrench,
-        title: item.sn || '-',
-        subtitle: [item.line, item.model].filter(Boolean).join(' · ') || pmState(item.pmStates?.[0]),
-        relative: num(item.pmOverdueDays) > 0
-          ? t(`เกิน ${item.pmOverdueDays} วัน`, `${item.pmOverdueDays} days overdue`)
-          : pmState(item.pmStates?.[0]),
-        urgency: -num(item.pmOverdueDays) - 1,
-      }))
-
-    return [...requests, ...pm].sort((a, b) => a.urgency - b.urgency).slice(0, 8)
-  }, [data, pmState, requestType, t])
+  const attentionRows = useMemo(() => (data?.attentionFixtures || []).slice(0, 8), [data])
+  const activities = useMemo(
+    () =>
+      (data?.recentHistory || []).slice(0, 8).map((item, index) => ({
+        id: `${item._id || item.sn || item.action || 'activity'}-${index}`,
+        time: formatDateTime(item.date),
+        sn: item.sn || '-',
+        action: activityLabel(item.action, t),
+        tone: ACTION_TONES[item.action] || 'slate',
+        detail: item.detail || '',
+        user: [item.name, item.lastname].filter(Boolean).join(' ') || item.empId || '-',
+        ref: item.request_id || item.pm_run_id || '-',
+      })),
+    [data, t],
+  )
 
   if (loading) return <Spinner label={t('กำลังโหลดข้อมูล…', 'Loading…')} />
-  if (error) return <ErrorState message={sm(error)} />
+  if (error) return <ErrorState message={sm(error)} onRetry={() => load(false)} />
   if (!data) return null
 
-  const trend = data.requestTrend || []
-  const topBreakdown = data.topBreakdown || []
-  const lineStats = data.lineStats || []
-  const recentRequests = data.recentRequests || []
-  const activeByProcess = data.activeByProcess || {}
-  const maxLineTotal = Math.max(1, ...lineStats.map((row) => num(row.total)))
-  const maxProcessCount = Math.max(1, ...summary.processRows.map(([, count]) => count))
-  const maxRequestCount = Math.max(1, ...summary.requestRows.map(([, count]) => count))
-  const maxTopScore = Math.max(1, ...topBreakdown.map((row) => num(row.total)))
-  const trendTotal = trend.reduce((sum, row) => sum + num(row.count), 0)
-
-  const healthSegments = [
-    { label: fixtureStatus('In Stock'), value: summary.stock, color: COLORS.emerald },
-    { label: fixtureStatus('In Use'), value: summary.inUse, color: COLORS.blue },
-    { label: fixtureStatus('Maintenance'), value: summary.maintenance, color: COLORS.amber },
-    { label: t('Order / NG', 'Order / NG'), value: summary.ng, color: COLORS.rose },
-  ]
-
   const kpis = [
-    {
-      label: t('Fixture ทั้งหมด', 'Total fixtures'),
-      value: summary.total,
-      hint: t('ทุก Line', 'All lines'),
-      icon: Boxes,
-      color: COLORS.indigo,
-      meter: 100,
-    },
-    {
-      label: t('ใช้งานที่ไลน์', 'In use'),
-      value: summary.inUse,
-      hint: `${summary.utilPercent}% ${t('ของทั้งหมด', 'of fleet')}`,
-      icon: Activity,
-      color: COLORS.blue,
-      meter: summary.utilPercent,
-    },
-    {
-      label: t('พร้อมเบิกจ่าย', 'Ready in stock'),
-      value: summary.stock,
-      hint: fixtureStatus('In Stock'),
-      icon: PackageSearch,
-      color: COLORS.emerald,
-      meter: summary.total ? (summary.stock / summary.total) * 100 : 0,
-    },
-    {
-      label: t('ซ่อมบำรุง', 'Maintenance'),
-      value: summary.maintenance,
-      hint: t('อยู่ในคิวซ่อม', 'In repair queue'),
-      icon: Wrench,
-      color: COLORS.amber,
-      meter: summary.total ? (summary.maintenance / summary.total) * 100 : 0,
-    },
-    {
-      label: t('คำขอค้าง', 'Active requests'),
-      value: summary.activeRequests,
-      hint: `${summary.requestTotal} ${t('คำขอทั้งหมด', 'total requests')}`,
-      icon: ClipboardList,
-      color: COLORS.violet,
-      meter: summary.requestTotal ? (summary.activeRequests / summary.requestTotal) * 100 : 0,
-    },
-    {
-      label: t('PM เกินกำหนด', 'PM overdue'),
-      value: summary.pmOverdue,
-      hint: t('เกิน 3 วันต้องมี 4M', '4M required after 3 days'),
-      icon: AlertTriangle,
-      color: COLORS.rose,
-      meter: Math.min(100, summary.pmOverdue * 8),
-    },
-    {
-      label: t('หมดอายุใน 3 วัน', 'Expired in 3 day'),
-      value: summary.expiringSoon,
-      hint: t('จะหมดอายุภายใน 3 วัน', 'Expiring within 3 days'),
-      icon: CalendarClock,
-      color: COLORS.amber,
-      meter: Math.min(100, summary.expiringSoon * 8),
-    },
-    {
-      label: t('หมดอายุแล้ว', 'Expired'),
-      value: summary.expired,
-      hint: t('หมดอายุแล้ว', 'Already expired'),
-      icon: AlertTriangle,
-      color: COLORS.rose,
-      meter: Math.min(100, summary.expired * 8),
-    },
+    { label: ui('totalFixtures'), value: summary.total, hint: ui('allLines'), icon: Boxes, tone: 'blue', focus: {} },
+    { label: ui('inUseKpi'), value: summary.inUse, hint: t(`${pct(summary.inUse, summary.total)}% ของทั้งหมด`, `${pct(summary.inUse, summary.total)}% of fleet`), icon: Activity, tone: 'blue', focus: { status: 'In Use' } },
+    { label: ui('inStockKpi'), value: summary.stock, hint: ui('readyToIssue'), icon: PackageCheck, tone: 'emerald', focus: { status: 'In Stock' } },
+    { label: ui('maintenanceKpi'), value: summary.maintenance, hint: ui('inRepairQueue'), icon: Wrench, tone: 'orange', focus: { status: 'Maintenance' } },
+    { label: ui('expired3Kpi'), value: summary.expiringSoon, hint: ui('expiringSoonHint'), icon: CalendarClock, tone: 'amber', focus: { expiry: 'expiring3' } },
+    { label: ui('expiredKpi'), value: summary.expired, hint: ui('alreadyExpiredHint'), icon: AlertTriangle, tone: 'red', focus: { expiry: 'expired' } },
   ]
 
   return (
-    <div className="-mb-16 -mt-6 flex h-[calc(100vh-65px)] flex-col gap-2 overflow-hidden lg:-mt-8 lg:h-screen">
-      {/* Slim header band — deliberately read-only. */}
-      <div className="relative shrink-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white px-4 py-2.5 shadow-[0_1px_2px_rgba(15,23,42,0.03),0_12px_28px_-24px_rgba(15,23,42,0.4)] sm:px-5">
-        <div className="absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r from-blue-500 via-indigo-500 to-violet-500" />
-        <div className="absolute -right-10 -top-16 h-36 w-36 rounded-full bg-indigo-100/50 blur-2xl" />
-        <div className="relative flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="flex items-center gap-1 text-[9px] font-black uppercase tracking-[0.18em] text-indigo-600">
-              <Sparkles className="h-3 w-3" /> {ui('fixtureIntelligence')}
-            </p>
-            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-              <h1 className="truncate text-[19px] font-black tracking-tight text-slate-900 sm:text-[22px]">
-                {t('ภาพรวมการดำเนินงาน', 'Operations Overview')}
-              </h1>
-              <p className="hidden truncate text-[10px] font-medium text-slate-500 md:block">
-                {t('สถานะ Fixture, คำขอ และจุดที่ต้องโฟกัสแบบเรียลไทม์', 'Live fixture state, request flow, and the hotspots that need attention')}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="hidden w-[220px] shrink-0 sm:block">
-              <div className="flex h-2 overflow-hidden rounded-full bg-slate-100">
-                {healthSegments.map((segment) => (
-                  <span
-                    key={segment.label}
-                    className="h-full"
-                    style={{
-                      width: `${summary.total ? (num(segment.value) / summary.total) * 100 : 0}%`,
-                      backgroundColor: segment.color,
-                    }}
-                    title={`${segment.label}: ${num(segment.value)}`}
-                  />
-                ))}
-              </div>
-              <div className="mt-1 flex justify-between gap-1 text-[8px] font-bold text-slate-400">
-                <span>{ui('inUseShort')} {summary.inUse}</span>
-                <span>{ui('stockShort')} {summary.stock}</span>
-                <span>{ui('pmShort')} {summary.maintenance}</span>
-                <span>{ui('ngShort')} {summary.ng}</span>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50/80 px-2.5 py-1.5">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-              </span>
-              <div>
-                <p className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">{ui('liveSnapshot')}</p>
-                <p className="font-mono text-[10px] font-bold text-slate-700">{formatDate(new Date())}</p>
-              </div>
-            </div>
-          </div>
-        </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow={ui('dashboard')}
+        icon={Boxes}
+        title={t('ภาพรวมการดำเนินงาน Fixture', 'Fixture operations overview')}
+        description={t(
+          'สถานะ Fixture, กำหนด PM/หมดอายุ และงานที่ต้องโฟกัสแบบเรียลไทม์',
+          'Live fixture status, PM/expiry dates, and the work that needs attention',
+        )}
+        actions={
+          <Button variant="secondary" icon={RefreshCw} disabled={refreshing} onClick={() => load(false)}>
+            {ui('refresh')}
+          </Button>
+        }
+      />
+
+      {/* 6 KPI cards */}
+      <div className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+        {kpis.map((kpi) => (
+          <StatCard
+            key={kpi.label}
+            label={kpi.label}
+            value={kpi.value.toLocaleString()}
+            hint={kpi.hint}
+            icon={kpi.icon}
+            tone={kpi.tone}
+            onClick={() => openFixtures(kpi.focus)}
+            className="p-3 sm:p-3.5"
+          />
+        ))}
       </div>
 
-      {/* Eight KPIs in one strip — no page scroll required. */}
-      <div className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
-        {kpis.map((kpi) => <CompactKpi key={kpi.label} {...kpi} />)}
-      </div>
+      {/* Status donut + expiration / PM overview */}
+      <div className="grid shrink-0 grid-cols-1 gap-3 lg:grid-cols-2">
+        <MiniPanel eyebrow={ui('status')} title={ui('statusOverview')} icon={Boxes} className="min-h-[210px]">
+          <div className="flex h-full flex-col items-center gap-4 sm:flex-row">
+            <DonutChart segments={statusSegments} total={summary.total} centerLabel={ui('totalFixtures')} />
+            <div className="grid w-full flex-1 grid-cols-1 gap-1.5">
+              {statusSegments.map((segment) => (
+                <button
+                  key={segment.key}
+                  type="button"
+                  onClick={() => openFixtures(segment.focus)}
+                  className="flex w-full items-center gap-2 rounded-lg border border-slate-100 bg-white px-2 py-1.5 text-left transition-colors hover:border-slate-300 hover:bg-slate-50/70"
+                >
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: segment.color }} />
+                  <span className="min-w-0 flex-1 truncate text-[10px] font-bold text-slate-600">{segment.label}</span>
+                  <span className="font-mono text-[10px] font-black text-slate-900">{segment.value.toLocaleString()}</span>
+                  <span className="w-8 text-right text-[9px] font-bold text-slate-400">{pct(segment.value, summary.total)}%</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </MiniPanel>
 
-      {/* Four summary panels share the remaining viewport height. */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        <MiniPanel eyebrow={ui('byLine')} title={t('การใช้ Fixture ต่อ Line', 'Line utilization')} icon={Layers3}>
-          <div className="flex h-full min-h-0 flex-col">
-            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-              {lineStats.length === 0 ? <EmptyLine>{t('ยังไม่มีข้อมูล Line', 'No line data yet')}</EmptyLine> : null}
-              {lineStats.map((row) => {
-                const total = num(row.total)
-                const other = num(row.inUse) + num(row.maintenance) + num(row.order) + num(row.pmOverdue)
-                const stock = Math.max(0, total - other)
-                return (
-                  <div key={row.line} className="min-w-0">
-                    <div className="mb-1 flex items-center justify-between gap-2 text-[9px]">
-                      <span className="truncate font-mono font-black text-slate-700">{row.line}</span>
-                      <span className="shrink-0 font-mono font-bold text-slate-400">{total}</span>
-                    </div>
-                    <StackedBar
-                      scale={maxLineTotal}
-                      parts={[
-                        { key: 'inUse', value: row.inUse, color: COLORS.blue },
-                        { key: 'stock', value: stock, color: '#cbd5e1' },
-                        { key: 'maint', value: row.maintenance, color: COLORS.amber },
-                        { key: 'ng', value: row.order, color: COLORS.violet },
-                        { key: 'pm', value: row.pmOverdue, color: COLORS.rose },
-                      ]}
+        <MiniPanel eyebrow={ui('expiryPmOverview')} title={ui('expiryPmOverview')} icon={CalendarClock} className="min-h-[210px]">
+          <div className="flex h-full flex-col">
+            <div className="space-y-2">
+              {expiryRows.map((row) => (
+                <button
+                  key={row.key}
+                  type="button"
+                  onClick={() => openFixtures(row.focus)}
+                  className="flex w-full items-center gap-2 rounded-lg px-1 py-0.5 text-left hover:bg-slate-50"
+                >
+                  <span className="w-[104px] shrink-0 truncate text-[10px] font-bold text-slate-600 sm:w-[126px]">{row.label}</span>
+                  <span className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100">
+                    <span
+                      className="block h-full rounded-full"
+                      style={{ width: `${pct(row.value, summary.total)}%`, backgroundColor: row.color }}
                     />
-                  </div>
-                )
-              })}
+                  </span>
+                  <span className="w-10 shrink-0 text-right font-mono text-[10px] font-black text-slate-800">
+                    {row.value.toLocaleString()}
+                  </span>
+                  <span className="w-7 shrink-0 text-right text-[9px] font-bold text-slate-400">{pct(row.value, summary.total)}%</span>
+                </button>
+              ))}
             </div>
-            <div className="mt-2 flex shrink-0 flex-wrap gap-x-2 gap-y-0.5 border-t border-slate-100 pt-1.5 text-[8px] font-bold text-slate-400">
-              <span className="flex items-center gap-1"><i className="h-1.5 w-1.5 rounded-full bg-blue-500" />{ui('inUseShort')}</span>
-              <span className="flex items-center gap-1"><i className="h-1.5 w-1.5 rounded-full bg-slate-300" />{ui('stockShort')}</span>
-              <span className="flex items-center gap-1"><i className="h-1.5 w-1.5 rounded-full bg-amber-500" />{ui('maintShort')}</span>
-              <span className="flex items-center gap-1"><i className="h-1.5 w-1.5 rounded-full bg-violet-500" />{ui('ngShort')}</span>
-              <span className="flex items-center gap-1"><i className="h-1.5 w-1.5 rounded-full bg-rose-500" />{ui('pmShort')}</span>
+            <div className="mt-auto flex flex-wrap gap-x-3 gap-y-1 border-t border-slate-100 pt-2 text-[9px] font-semibold text-slate-500">
+              <span>{ui('pmOverdue')}: <b className="font-mono text-rose-600">{summary.pmOverdue}</b></span>
+              <span>{pmState('on-due')}: <b className="font-mono text-amber-600">{summary.pmOnDue}</b></span>
+              <span>{pmState('pre-alert')}: <b className="font-mono text-indigo-600">{summary.pmPreAlert}</b></span>
             </div>
+          </div>
+        </MiniPanel>
+      </div>
+
+      {/* Attention + recent activity */}
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-2">
+        <MiniPanel
+          eyebrow={t('ความเร่งด่วน', 'Priority')}
+          title={ui('attentionRequired')}
+          icon={AlertTriangle}
+          className="min-h-[260px]"
+          action={
+            <button
+              type="button"
+              onClick={() => openFixtures({ sns: attentionRows.map((row) => row.sn) })}
+              className="shrink-0 rounded-lg px-2 py-1 text-[9px] font-black text-blue-600 hover:bg-blue-50"
+            >
+              {ui('viewAll')}
+            </button>
+          }
+        >
+          <div className="h-full overflow-auto rounded-lg border border-slate-100">
+            {attentionRows.length === 0 ? (
+              <EmptyLine>{ui('noAttention')}</EmptyLine>
+            ) : (
+              <table className="w-full border-collapse text-left text-[10px]">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-[8px] font-black uppercase tracking-[0.1em] text-slate-400">
+                  <tr>
+                    <th className="px-2 py-1.5">{ui('fixtureId')}</th>
+                    <th className="px-2 py-1.5">{ui('line')}</th>
+                    <th className="px-2 py-1.5">{ui('model')}</th>
+                    <th className="px-2 py-1.5">{ui('currentStatus')}</th>
+                    <th className="px-2 py-1.5">{ui('pmExpDate')}</th>
+                    <th className="px-2 py-1.5">{ui('remainingDays')}</th>
+                    <th className="px-2 py-1.5">{ui('action')}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {attentionRows.map((row) => (
+                    <tr key={`${row.sn}-${row.severity}`} className="hover:bg-slate-50/70">
+                      <td className="px-2 py-1.5">
+                        <p className="font-mono font-black text-slate-800">{row.sn}</p>
+                        <p className="truncate text-[8px] font-bold text-slate-400">
+                          {severityLabel(row.severity, t, ui, fixtureStatus)}
+                        </p>
+                      </td>
+                      <td className="max-w-[72px] truncate px-2 py-1.5 font-mono text-slate-600" title={row.line}>{row.line || '-'}</td>
+                      <td className="max-w-[88px] truncate px-2 py-1.5 font-mono text-slate-600" title={row.model}>{row.model || '-'}</td>
+                      <td className="px-2 py-1.5">
+                        <FixtureStatusBadge status={row.status} className="px-1.5 py-0.5 text-[8px]" />
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-1.5 font-mono text-slate-600">
+                        {formatDate(row.date)}
+                        <span className="ml-1 text-[8px] font-bold text-slate-400">{row.dateType === 'pm' ? 'PM' : 'Exp'}</span>
+                      </td>
+                      <td className={cn(
+                        'whitespace-nowrap px-2 py-1.5 font-mono font-black',
+                        num(row.daysLeft) < 0 ? 'text-rose-600' : num(row.daysLeft) <= 3 ? 'text-amber-600' : 'text-slate-600',
+                      )}
+                      >
+                        {remainingLabel(row.daysLeft, t, ui)}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <button
+                          type="button"
+                          onClick={() => openFixtures({ sn: row.sn })}
+                          className="rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[9px] font-bold text-blue-600 hover:border-blue-200 hover:bg-blue-50"
+                        >
+                          {ui('view')}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </MiniPanel>
 
         <MiniPanel
-          eyebrow={ui('workflow')}
-          title={t('คำขอ / ความกดดัน', 'Requests · flow')}
-          icon={TrendingUp}
+          eyebrow={t('ประวัติการใช้งาน', 'Audit trail')}
+          title={ui('recentActivity')}
+          icon={Activity}
+          className="min-h-[260px]"
           action={
-            <span className="flex shrink-0 items-center gap-1 rounded-lg bg-indigo-50 px-2 py-1 text-[9px] font-black text-indigo-600">
-              <ArrowUpRight className="h-3 w-3" /> {trendTotal} · {ui('last7Days')}
-            </span>
+            <button
+              type="button"
+              onClick={() => onNavigate?.('history')}
+              className="shrink-0 rounded-lg px-2 py-1 text-[9px] font-black text-blue-600 hover:bg-blue-50"
+            >
+              {ui('viewAll')}
+            </button>
           }
         >
-          <div className="h-full space-y-2 overflow-y-auto pr-1">
-            <p className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">{ui('status')}</p>
-            {summary.requestRows.map(([status, count]) => (
-              <div key={status} className="flex items-center gap-2">
-                <span className="w-[54px] shrink-0 truncate text-[9px] font-bold text-slate-500">{requestStatus(status)}</span>
-                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
-                  <div
-                    className="h-full rounded-full"
-                    style={{ width: `${(count / maxRequestCount) * 100}%`, backgroundColor: STATUS_COLORS[status] || COLORS.slate }}
-                  />
-                </div>
-                <span className="w-5 shrink-0 text-right font-mono text-[9px] font-black tabular-nums text-slate-700">{count}</span>
-              </div>
-            ))}
-            {summary.requestRows.length === 0 ? <EmptyLine>{t('ยังไม่มีคำขอ', 'No requests yet')}</EmptyLine> : null}
-
-            <div className="border-t border-slate-100 pt-2">
-              <p className="mb-1 text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">{ui('types')}</p>
-              <div className="flex flex-wrap gap-1">
-                {summary.requestTypeRows.length === 0 ? <EmptyLine>{t('ยังไม่มีคำขอ', 'No requests yet')}</EmptyLine> : null}
-                {summary.requestTypeRows.map(([type, count]) => (
-                  <span key={type} className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-600">
-                    {requestType(type)} <b className="font-mono text-slate-800">{count}</b>
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            <div className="border-t border-slate-100 pt-2">
-              <p className="mb-1 text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">{ui('process')}</p>
-              <div className="space-y-1.5">
-                {summary.processRows.map(([process, count]) => (
-                  <div key={process} className="flex items-center gap-2">
-                    <span className="w-[58px] shrink-0 truncate text-[9px] font-semibold text-slate-500">{process}</span>
-                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
-                      <div className="h-full rounded-full bg-indigo-400" style={{ width: `${(count / maxProcessCount) * 100}%` }} />
-                    </div>
-                    <span className="w-5 shrink-0 text-right font-mono text-[9px] font-bold text-slate-600">{count}</span>
-                  </div>
-                ))}
-                {summary.processRows.length === 0 ? <EmptyLine>{ui('notAvailable')}</EmptyLine> : null}
-              </div>
-            </div>
-          </div>
-        </MiniPanel>
-
-        <MiniPanel eyebrow={ui('focus')} title={t('ต้องโฟกัสตอนนี้', 'Priority radar')} icon={AlertTriangle}>
-          <div className="h-full space-y-2 overflow-y-auto pr-1">
-            <div>
-              <p className="mb-1 text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">{ui('dueOverdue')}</p>
-              <div className="space-y-1">
-                {attention.length === 0 ? <EmptyLine>{t('ไม่มีงานที่ต้องทำตอนนี้', 'Nothing to do right now')}</EmptyLine> : null}
-                {attention.slice(0, 5).map((item) => {
-                  const Icon = item.icon
-                  const urgent = item.urgency < 0
-                  return (
-                    <div key={item.id} className="flex items-center gap-2 rounded-lg border border-slate-100 bg-white px-2 py-1.5">
-                      <span className={cn(
-                        'flex h-6 w-6 shrink-0 items-center justify-center rounded-md',
-                        urgent ? 'bg-rose-50 text-rose-600' : 'bg-indigo-50 text-indigo-600',
-                      )}
-                      >
-                        <Icon className="h-3 w-3" strokeWidth={2.2} />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate font-mono text-[10px] font-black text-slate-800">{item.title}</p>
-                        <p className="truncate text-[9px] font-semibold text-slate-400">{item.subtitle || '-'}</p>
-                      </div>
-                      <span className={cn('shrink-0 text-[9px] font-black', urgent ? 'text-rose-600' : 'text-indigo-600')}>
-                        {item.relative}
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-
-            <div className="border-t border-slate-100 pt-2">
-              <p className="mb-1 text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">{ui('topBreakdown')}</p>
-              {topBreakdown.length === 0 ? <EmptyLine>{t('ไม่มี Fixture ที่ต้อง breakdown', 'No breakdown hotspots right now')}</EmptyLine> : null}
-              <div className="space-y-1.5">
-                {topBreakdown.slice(0, 3).map((row, index) => (
-                  <div key={row.key} className="rounded-lg border border-slate-100 bg-slate-50/60 px-2 py-1.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="min-w-0 truncate font-mono text-[10px] font-black text-slate-700">
-                        <span className="mr-1 text-slate-400">{index + 1}.</span>{row.line}
-                      </p>
-                      <span className="shrink-0 font-mono text-[10px] font-black text-slate-900">{row.total}</span>
-                    </div>
-                    <p className="truncate text-[9px] font-semibold text-slate-400">
-                      {row.model} · M {row.maintenance} · PM {row.pm} · NG {row.ng}
-                    </p>
-                    <div className="mt-1">
-                      <StackedBar
-                        scale={maxTopScore}
-                        parts={[
-                          { key: 'maint', value: row.maintenance, color: COLORS.amber },
-                          { key: 'pm', value: row.pm, color: COLORS.rose },
-                          { key: 'ng', value: row.ng, color: COLORS.violet },
-                        ]}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </MiniPanel>
-
-        <MiniPanel eyebrow={ui('activeFleet')} title={t('กระบวนการ & ล่าสุด', 'Process & latest')} icon={Gauge}>
-          <div className="flex h-full min-h-0 flex-col gap-2">
-            <div className="grid grid-cols-2 gap-1.5">
-              {PROCESS_TYPES.map((process) => {
-                const count = num(activeByProcess[process.value])
-                const max = Math.max(1, ...PROCESS_TYPES.map((item) => num(activeByProcess[item.value])))
-                return (
-                  <div key={process.value} className="min-w-0 rounded-lg border border-slate-100 bg-slate-50/60 p-2">
-                    <div className="flex items-center justify-between gap-1">
-                      <p className="truncate text-[9px] font-black text-slate-700">{process.value}</p>
-                      <p className="font-mono text-[11px] font-black text-slate-900">{count}</p>
-                    </div>
-                    <div className="mt-1 h-1 overflow-hidden rounded-full bg-white">
-                      <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-500" style={{ width: `${(count / max) * 100}%` }} />
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto border-t border-slate-100 pt-2">
-              <p className="mb-1 text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">{ui('latestRequests')}</p>
-              <div className="space-y-1">
-                {recentRequests.length === 0 ? <EmptyLine>{t('ยังไม่มีคำขอ', 'No requests yet')}</EmptyLine> : null}
-                {recentRequests.slice(0, 5).map((request, index) => (
-                  <div key={`${request.request_id || request._id || 'request'}-${index}`} className="flex items-center gap-2 rounded-lg border border-slate-100 bg-white px-2 py-1.5">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-mono text-[10px] font-black text-indigo-600">{request.request_id || '-'}</p>
-                      <p
-                        className="truncate text-[9px] font-semibold text-slate-400"
-                        title={[requestType(request.type), modelLabel(request), request.line, request.queueSlot ? slotLabel(request.queueSlot) : '', formatDate(request.requestInfo?.date || request.date)].filter(Boolean).join(' · ')}
-                      >
-                        {[requestType(request.type), modelLabel(request), request.line].filter(Boolean).join(' · ')}
-                      </p>
-                    </div>
-                    <RequestStatusBadge status={request.status} />
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex shrink-0 items-center gap-1.5 rounded-lg bg-indigo-50/70 px-2 py-1.5 text-[9px] font-bold text-indigo-700">
-              <Boxes className="h-3 w-3 shrink-0" />
-              {t('รวม Fixture ที่ใช้งาน', 'Total in-use fixtures')}: {summary.inUse.toLocaleString()}
-            </div>
+          <div className="h-full overflow-auto rounded-lg border border-slate-100">
+            {activities.length === 0 ? (
+              <EmptyLine>
+                {ui('noActivity')} · {num(data.historyCount)} {t('รายการในระบบ', 'records in system')}
+              </EmptyLine>
+            ) : (
+              <table className="w-full border-collapse text-left text-[10px]">
+                <thead className="sticky top-0 z-10 bg-slate-50 text-[8px] font-black uppercase tracking-[0.1em] text-slate-400">
+                  <tr>
+                    <th className="px-2 py-1.5">{ui('timestamp')}</th>
+                    <th className="px-2 py-1.5">{ui('fixtureId')}</th>
+                    <th className="px-2 py-1.5">{ui('recentActivity')}</th>
+                    <th className="px-2 py-1.5">{ui('user')}</th>
+                    <th className="px-2 py-1.5">{ui('requestOrder')}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {activities.map((item) => (
+                    <tr key={item.id} className="hover:bg-slate-50/70">
+                      <td className="whitespace-nowrap px-2 py-1.5 font-mono text-[9px] text-slate-500">{item.time}</td>
+                      <td className="px-2 py-1.5 font-mono font-black text-slate-800">{item.sn}</td>
+                      <td className="max-w-[180px] px-2 py-1.5">
+                        <span className="font-bold text-slate-700">
+                          <span className={cn('mr-1 inline-block h-1.5 w-1.5 rounded-full align-middle', TONE_DOTS[item.tone] || TONE_DOTS.slate)} />
+                          {item.action}
+                        </span>
+                        {item.detail ? (
+                          <p className="truncate text-[8px] text-slate-400" title={item.detail}>{item.detail}</p>
+                        ) : null}
+                      </td>
+                      <td className="max-w-[92px] truncate px-2 py-1.5 text-slate-600" title={item.user}>{item.user}</td>
+                      <td className="max-w-[110px] truncate px-2 py-1.5 font-mono text-[9px] text-blue-600" title={item.ref}>{item.ref}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </MiniPanel>
       </div>

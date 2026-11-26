@@ -33,7 +33,8 @@ import Button from '../components/ui/Button'
 import DataTable from '../components/ui/DataTable'
 import Modal from '../components/ui/Modal'
 import SearchableSelect from '../components/ui/SearchableSelect'
-import { cn } from '../lib/format'
+import { cn, daysUntil } from '../lib/format'
+import { clearFixtureFocus, peekFixtureFocus } from '../lib/navigation'
 import { useToast } from '../components/ui/Toast'
 import { useLabels, useServerMessage } from '../lib/i18n'
 
@@ -156,6 +157,12 @@ const EMPTY_FILTERS = {
   revision: '',
 }
 
+const focusFilters = (focus) => ({
+  ...EMPTY_FILTERS,
+  ...(focus?.status ? { status: focus.status } : {}),
+  ...(focus?.sn ? { sn: focus.sn } : {}),
+})
+
 const valuesFor = (options, key) => (Array.isArray(options?.[key]) ? options[key] : [])
 
 const toOptions = (values, labelFn) =>
@@ -189,6 +196,7 @@ const StatusBadge = ({ status, label }) => {
 export default function FixtureListPage() {
   const { t, fixtureStatus } = useLabels()
   const sm = useServerMessage()
+  const initialFocus = useMemo(() => peekFixtureFocus(), [])
   const [docs, setDocs] = useState([])
   const [flat, setFlat] = useState([])
   const [details, setDetails] = useState([])
@@ -202,11 +210,16 @@ export default function FixtureListPage() {
   const [error, setError] = useState('')
   const [view, setView] = useState('fixture')
   const [expandedRowId, setExpandedRowId] = useState('')
+  const [focusExpiry, setFocusExpiry] = useState(() => initialFocus?.expiry || '')
+  const [focusSns, setFocusSns] = useState(() =>
+    Array.isArray(initialFocus?.sns) ? initialFocus.sns : [],
+  )
   const [query, setQuery] = useState('')
-  const [filters, setFilters] = useState(EMPTY_FILTERS)
-  const [appliedFilters, setAppliedFilters] = useState(EMPTY_FILTERS)
+  const [filters, setFilters] = useState(() => focusFilters(initialFocus))
+  const [appliedFilters, setAppliedFilters] = useState(() => focusFilters(initialFocus))
   const toast = useToast()
   const importInputRef = useRef(null)
+  const focusLoadedRef = useRef(false)
   const [importing, setImporting] = useState(false)
   const [pendingImport, setPendingImport] = useState(null)
 
@@ -268,6 +281,8 @@ export default function FixtureListPage() {
     setFilters(EMPTY_FILTERS)
     setAppliedFilters(EMPTY_FILTERS)
     setQuery('')
+    setFocusExpiry('')
+    setFocusSns([])
     fetchFixtureRows(EMPTY_FILTERS)
   }
 
@@ -337,9 +352,15 @@ export default function FixtureListPage() {
     load()
   }, [load])
 
+  /* A KPI or attention row from the Dashboard hands a one-time filter here.
+   * The ref keeps StrictMode's second effect run from resetting it. */
   useEffect(() => {
-    fetchFixtureRows(EMPTY_FILTERS)
-  }, [fetchFixtureRows])
+    if (focusLoadedRef.current) return
+    focusLoadedRef.current = true
+    setView('fixture')
+    fetchFixtureRows(focusFilters(initialFocus))
+    clearFixtureFocus()
+  }, [fetchFixtureRows, initialFocus])
 
   const needle = query.trim().toLowerCase()
   const snNeedle = String(appliedFilters.sn || '').trim().toLowerCase()
@@ -382,6 +403,23 @@ export default function FixtureListPage() {
       maintenance: countStatus('Maintenance'),
     }
   }, [stats, allFixtures])
+
+  /* Dashboard focus can also narrow by expiry window or an explicit SN set.
+   * These filters are intentionally client-side so no new API is required. */
+  const visibleFixtureRows = useMemo(() => {
+    const snSet = focusSns.length
+      ? new Set(focusSns.map((value) => String(value).toLowerCase()))
+      : null
+    return fixtureRows.filter((row) => {
+      if (snSet && !snSet.has(String(row.sn || '').toLowerCase())) return false
+      if (!focusExpiry) return true
+      const days = daysUntil(row.usage?.exp)
+      if (focusExpiry === 'expired') return days !== null && days < 0
+      if (focusExpiry === 'expiring3') return days !== null && days >= 0 && days <= 3
+      if (focusExpiry === 'expiring7') return days !== null && days >= 4 && days <= 7
+      return true
+    })
+  }, [fixtureRows, focusExpiry, focusSns])
 
   const matrix = useMemo(() => {
     const filteredDocs = docs.filter(
@@ -657,7 +695,7 @@ export default function FixtureListPage() {
           />
           <p className="text-[11px] font-semibold text-slate-400">
             {view === 'fixture'
-              ? t(`${fixtureRows.length.toLocaleString()} รายการ`, `${fixtureRows.length.toLocaleString()} item(s)`)
+              ? t(`${visibleFixtureRows.length.toLocaleString()} รายการ`, `${visibleFixtureRows.length.toLocaleString()} item(s)`)
               : t(
                   `${matrix.rows.length.toLocaleString()} Model · ${matrix.positions.length.toLocaleString()} Position`,
                   `${matrix.rows.length.toLocaleString()} model(s) · ${matrix.positions.length.toLocaleString()} position(s)`,
@@ -720,7 +758,7 @@ export default function FixtureListPage() {
           ) : (
             <DataTable
               columns={flatColumns}
-              rows={fixtureRows}
+              rows={visibleFixtureRows}
               rowKey={(row) => row.sn}
               pageSize={50}
               dense

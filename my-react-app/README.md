@@ -33,7 +33,7 @@ PM → Pre-Alert → Overdue 3 day remind (Orange)
   ปุ่ม `View list` ใน `Do this now` หรือกลุ่มที่ติด 4M จะเปิดรายการทั้งหมดเป็น modal กระชับ (กรอง Line/Model/SN ได้ และยังใส่ Doc NO./เริ่ม PM จากในรายการได้) — ไม่มีแผงรายการยาวด้านล่างอีกต่อไป
   วันที่เริ่มนับ PM คือ `usage.inUseAt` (จุดเปลี่ยน In Stock → In Use) + 90 วัน (`pmDueDate`) **ไม่ใช่** `usage.exp` ที่ใช้สำหรับวันหมดอายุของ Fixture
   4M ใช้ **Doc NO.** (กรอกในหน้า PM แทนการแนบไฟล์) และเก็บใน `pmForms` หลังของเก่าที่เป็น URL ยังเปิดได้อยู่
-- **Dashboard** — KPI `PM เกินกำหนด`, `Expired in 3 day`, `Expired` แยกจากกัน สรุปทั้งหมดอยู่ในหน้าเดียวไม่ต้องเลื่อน
+- **Dashboard** — KPI จำนวน Fixture / ใช้งาน / ในสต็อก / ซ่อมบำรุง / หมดอายุใน 3 วัน / หมดอายุแล้ว คลิกเพื่อไป Fixture Detail พร้อมตัวกรองที่เกี่ยวข้อง, กราฟ Donut ตามสถานะ, ภาพรวมหมดอายุ/PM (รวม PM เกินกำหนด), ตาราง `Attention Required` ที่คลิก `View` ไปยัง Fixture ได้, และ `Recent Activity` จาก history จริง สรุปทั้งหมดอยู่ในหน้าเดียว
 - **Fixture List** — คลิกแถว Line/Model เพื่อขยายแถวแทรกด้านล่างแถวนั้นทันที แสดง Fixture Base ของแต่ละ Position (พร้อมจำนวนตาม Excel / จำนวนจริง)
 - **Maintenance** — Verify + Record: `OK` → Reset Due + Auto Print Sticker + เปลี่ยนการ์ด Order เป็น `รอผู้ขอ Verify` (ยังไม่ปิดคำขอ), `NG` → Need Scrape / Need PR / New One Replacement
 - **ภาษา** — ระบบ switching ภาษาแบบรวมศูนย์ (`LanguageContext` + `src/lib/translations.js`) ค่าเริ่มต้นเป็นภาษาไทย แปลข้อความ UI เป็นไทยเกือบทั้งหมด และคงคำเฉพาะ เช่น `Fixture`, `PM`, `NG`, `SN`, `Doc NO.`, `FAN2 · ระบบ Fixture MM` ไว้

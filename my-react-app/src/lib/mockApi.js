@@ -123,6 +123,31 @@ const pmOverdueDays = (fixture) => {
   return days === null ? 0 : Math.max(0, -days)
 }
 
+/* Dashboard read models mirror server.js and reuse the same expiry / PM rules. */
+const expiryBucketOf = (days) => {
+  if (days === null) return 'normal'
+  if (days < 0) return 'expired'
+  if (days <= 3) return 'within3'
+  if (days <= 7) return 'within7'
+  return 'normal'
+}
+
+const attentionSeverityOf = (fixture, expDays, pmDays) => {
+  if (expDays !== null && expDays < 0) return 'expired'
+  if (expDays !== null && expDays <= 3) return 'expiring3'
+  if (pmDays > 0) return 'pmOverdue'
+  if (fixture.status === 'Maintenance') return 'maintenance'
+  if (
+    ORDER_STATUSES.includes(fixture.status) ||
+    ['PM', 'PM Pending', 'Scrape', 'PR', 'PR Ready', 'Replaced'].includes(fixture.status)
+  ) {
+    return 'abnormal'
+  }
+  return ''
+}
+
+const ATTENTION_RANK = { expired: 0, expiring3: 1, pmOverdue: 2, maintenance: 3, abnormal: 4 }
+
 const hasPmGroup = (fixture) => {
   const line = norm(fixture?.line)
   const model = norm(fixture?.model)
@@ -2138,13 +2163,42 @@ export async function mockRequest(path, { method = 'GET', body } = {}) {
       })
     }
     const expiryStats = { expiringIn3Days: 0, expired: 0 }
+    const expiryOverview = { expired: 0, within3: 0, within7: 0, normal: 0 }
+    /* Mirrors server.js: expired takes priority so donut segments sum to total. */
+    const statusOverview = { expired: 0, inUse: 0, inStock: 0, maintenance: 0, other: 0 }
+    const attentionFixtures = []
     for (const fixture of fixtures) {
       const key = fixture.status || 'Unknown'
       counts[key] = (counts[key] || 0) + 1
 
       const expDays = daysUntil(fixture.usage?.exp)
+      const pmDays = pmOverdueDays(fixture)
       if (expDays !== null && expDays >= 0 && expDays <= 3) expiryStats.expiringIn3Days += 1
       if (expDays !== null && expDays < 0) expiryStats.expired += 1
+      expiryOverview[expiryBucketOf(expDays)] += 1
+      if (expDays !== null && expDays < 0) statusOverview.expired += 1
+      else if (fixture.status === 'In Use') statusOverview.inUse += 1
+      else if (fixture.status === 'In Stock') statusOverview.inStock += 1
+      else if (fixture.status === 'Maintenance') statusOverview.maintenance += 1
+      else statusOverview.other += 1
+
+      const severity = attentionSeverityOf(fixture, expDays, pmDays)
+      if (severity) {
+        const pmDue = pmDueDateOf(fixture)
+        const expiryFocus = severity === 'expired' || severity === 'expiring3'
+        attentionFixtures.push({
+          sn: fixture.sn,
+          line: fixture.line || '',
+          model: fixture.model || '',
+          status: key,
+          severity,
+          date: expiryFocus ? text(fixture.usage?.exp) : pmDue,
+          dateType: expiryFocus ? 'exp' : 'pm',
+          daysLeft: expiryFocus ? expDays : daysUntil(pmDue),
+          expDays,
+          pmOverdueDays: pmDays,
+        })
+      }
 
       const lineKey = fixture.line || 'N/A'
       const lineRow = lineMap.get(lineKey) || {
@@ -2159,7 +2213,7 @@ export async function mockRequest(path, { method = 'GET', body } = {}) {
       if (fixture.status === 'In Use') lineRow.inUse += 1
       if (fixture.status === 'Maintenance') lineRow.maintenance += 1
       if (ORDER_STATUSES.includes(fixture.status)) lineRow.order += 1
-      if (pmOverdueDays(fixture) > 0) lineRow.pmOverdue += 1
+      if (pmDays > 0) lineRow.pmOverdue += 1
       lineMap.set(lineKey, lineRow)
 
       const storageKey = fixture.usage?.storage || 'ไม่ระบุ'
@@ -2177,6 +2231,15 @@ export async function mockRequest(path, { method = 'GET', body } = {}) {
     }
     const lineStats = [...lineMap.values()].sort((a, b) => a.line.localeCompare(b.line))
     const storageStats = [...storageMap.values()].sort((a, b) => a.location.localeCompare(b.location))
+
+    const attentionCount = attentionFixtures.length
+    attentionFixtures.sort(
+      (a, b) =>
+        (ATTENTION_RANK[a.severity] ?? 9) - (ATTENTION_RANK[b.severity] ?? 9) ||
+        (a.daysLeft ?? 9999) - (b.daysLeft ?? 9999) ||
+        String(a.sn).localeCompare(String(b.sn)),
+    )
+    const attention = attentionFixtures.slice(0, 50)
 
     const lines = {}
     for (const doc of database.fixtureLists) {
@@ -2329,6 +2392,10 @@ export async function mockRequest(path, { method = 'GET', body } = {}) {
       requestTrend: [...trendMap.values()],
       topBreakdown,
       expiryStats,
+      expiryOverview,
+      statusOverview,
+      attentionFixtures: attention,
+      attentionCount,
       pmAlerts,
       pmStateCounts,
       maintenanceQueue,
