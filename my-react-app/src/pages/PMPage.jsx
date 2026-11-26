@@ -14,7 +14,6 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
-  Upload,
   Wrench,
   XCircle,
 } from 'lucide-react'
@@ -53,11 +52,10 @@ const outcomeLabel = (value, t) => {
   return labels[value] || value
 }
 
-const CALENDAR_STATES = ['over-due', 'overdue-remind', 'on-due', 'usage-remind', 'pre-alert']
+const CALENDAR_STATES = ['over-due', 'overdue-remind', 'on-due', 'pre-alert']
 const PM_TONE = {
   'over-due': 'red',
   'overdue-remind': 'orange',
-  'usage-remind': 'orange',
   'on-due': 'blue',
   'pre-alert': 'amber',
   planned: 'purple',
@@ -80,12 +78,28 @@ const dateKey = (value) => {
   return toDateInput(value)
 }
 
-// Server exposes pmOverdueDays / needs4M on /api/pm; fall back to the exp date
-// so the same guard works if an older payload omits those fields.
+// PM is counted from usage.inUseAt + 90 days. usage.exp is a separate expiry
+// date and must not be used for PM overdue or 4M blocking.
+const addDaysInput = (value, days) => {
+  const raw = String(value || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}/.test(raw)) return ''
+  const date = new Date(`${raw.slice(0, 10)}T00:00:00`)
+  date.setDate(date.getDate() + days)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+const pmDueDateOf = (row) => {
+  const explicit = String(row?.pmDueDate || '').trim()
+  if (/^\d{4}-\d{2}-\d{2}/.test(explicit)) return explicit.slice(0, 10)
+  return addDaysInput(row?.usage?.inUseAt || row?.pmStartDate, 90)
+}
+
+// Server exposes pmOverdueDays / needs4M on /api/pm; fall back to the computed
+// PM due date so the same guard works if an older payload omits those fields.
 const overdueDaysOf = (row) => {
   const explicit = Number(row?.pmOverdueDays)
   if (Number.isFinite(explicit) && explicit > 0) return explicit
-  const days = daysUntil(row?.usage?.exp)
+  const days = daysUntil(pmDueDateOf(row))
   return days === null ? 0 : Math.max(0, -days)
 }
 
@@ -97,6 +111,9 @@ const groupValueOf = (value) => {
 
 const hasGroupOf = (row) =>
   Boolean(groupValueOf(row?.line)) && Boolean(groupValueOf(row?.model))
+
+// Older records hold a file URL; Doc NO. entries are plain text.
+const isDocUrl = (value) => /^(https?:\/\/|\/uploads\/)/i.test(String(value || '').trim())
 
 // Fixtures without Line + Model are not a 4M group and never count as blocked.
 const needs4MOf = (row) =>
@@ -120,7 +137,7 @@ const countPmStates = (list = []) => {
   const has = (row, state) => (row.pmStates || []).includes(state)
   return {
     all: list.length,
-    preAlert: list.filter((row) => has(row, 'pre-alert') || has(row, 'usage-remind')).length,
+    preAlert: list.filter((row) => has(row, 'pre-alert')).length,
     onDue: list.filter((row) => has(row, 'on-due')).length,
     overDue: list.filter((row) => has(row, 'over-due') || has(row, 'overdue-remind')).length,
   }
@@ -155,8 +172,8 @@ export default function PMPage({ user }) {
   const [mQuery, setMQuery] = useState('')
   const [selectedVerify, setSelectedVerify] = useState(() => new Set())
 
-  /* ---- 4M document upload (line-by-line) ---- */
-  const [uploadFile, setUploadFile] = useState(null)
+  /* ---- 4M Doc NO. (line-by-line) ---- */
+  const [docNo, setDocNo] = useState('')
   const [uploadDays, setUploadDays] = useState(7)
   const [uploadBusy, setUploadBusy] = useState(false)
 
@@ -174,7 +191,7 @@ export default function PMPage({ user }) {
   const [busy, setBusy] = useState(false)
   const [expandedLines, setExpandedLines] = useState({})
   const [showAllFixtures, setShowAllFixtures] = useState({})
-  const [showDetails, setShowDetails] = useState(false)
+  const [listOpen, setListOpen] = useState(false)
   // uploadGroup = { key, line, model } — inline 4M panel in today's work
   const [uploadGroup, setUploadGroup] = useState(null)
 
@@ -260,9 +277,9 @@ export default function PMPage({ user }) {
       entry.states.add(state)
     }
     for (const row of rows) {
-      const expKey = dateKey(row.usage?.exp)
+      const dueKey = dateKey(pmDueDateOf(row))
       for (const state of (row.pmStates || [])) {
-        if (CALENDAR_STATES.includes(state)) add(expKey, row, state)
+        if (CALENDAR_STATES.includes(state)) add(dueKey, row, state)
       }
       if (row.pmDate) add(dateKey(row.pmDate), row, 'planned')
     }
@@ -405,8 +422,8 @@ export default function PMPage({ user }) {
   const blockMessage = (row) => {
     const days = overdueDaysOf(row)
     return t(
-      `Fixture ${row?.sn || ''} เกินกำหนด PM ${days} วัน — กรุณาแนบเอกสาร 4M ก่อนแก้ไขข้อมูล`,
-      `Fixture ${row?.sn || ''} is ${days} days overdue — attach the 4M document before editing`,
+      `Fixture ${row?.sn || ''} เกินกำหนด PM ${days} วัน — กรุณาใส่ Doc NO. 4M ก่อนแก้ไขข้อมูล`,
+      `Fixture ${row?.sn || ''} is ${days} days overdue — enter the 4M Doc NO. before editing`,
     )
   }
 
@@ -468,26 +485,27 @@ export default function PMPage({ user }) {
       lineKey,
       modelKey,
     }))
-    setUploadFile(null)
+    setDocNo('')
     setUploadDays(7)
+    setListOpen(false)
     window.setTimeout(
       () => document.getElementById('pm-actions')?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
       80,
     )
   }
 
+  const openList = (line = '', model = '') => {
+    setLineFilter(groupValueOf(line))
+    setModelFilter(groupValueOf(model))
+    setQuery('')
+    setExpandedLines(groupValueOf(line) ? { [groupValueOf(line)]: true } : {})
+    setTarget(null)
+    setListOpen(true)
+  }
+
   const focusCalendarLine = (line) => {
     setActiveTab('pm')
-    setLineFilter(groupValueOf(line))
-    setModelFilter('')
-    setQuery('')
-    setTarget(null)
-    setExpandedLines((current) => ({ ...current, [line]: true }))
-    setShowDetails(true)
-    window.setTimeout(
-      () => document.getElementById('pm-worklist')?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
-      80,
-    )
+    openList(line)
   }
 
   const toggleLine = (line) =>
@@ -513,21 +531,25 @@ export default function PMPage({ user }) {
       return next
     })
 
-  const uploadGroupForms = async () => {
-    if (!uploadGroup || !uploadFile) return
+  const submitGroupDocNo = async () => {
+    const value = docNo.trim()
+    if (!uploadGroup || !value) {
+      toast.error(t('กรุณากรอก Doc NO. 4M', 'Please enter the 4M Doc NO.'))
+      return
+    }
     const group = uploadGroup
     setUploadBusy(true)
     try {
-      const res = await api.pmUploadGroup(group.lineKey, group.modelKey, uploadFile, uploadDays, user)
+      const res = await api.pmUploadGroup(group.lineKey, group.modelKey, value, uploadDays, user)
       toast.success(
         res?.message
           ? sm(res.message)
           : t(
-              `แนบเอกสาร 4M ให้ ${res?.count ?? 0} ตัวใน Line ${group.line} / Model ${group.model} แล้ว`,
-              `Attached the 4M document to ${res?.count ?? 0} fixture(s) in line ${group.line} / model ${group.model}`,
+              `บันทึก Doc NO. 4M ให้ ${res?.count ?? 0} ตัวใน Line ${group.line} / Model ${group.model} แล้ว`,
+              `Saved the 4M Doc NO. for ${res?.count ?? 0} fixture(s) in line ${group.line} / model ${group.model}`,
             ),
       )
-      setUploadFile(null)
+      setDocNo('')
       setUploadGroup(null)
       await load()
     } catch (err) {
@@ -577,7 +599,7 @@ export default function PMPage({ user }) {
       if (res?.skipped?.length) {
         toast.error(
           t(
-            `ข้าม ${res.skipped.length} ตัวที่ต้องแนบ 4M ก่อน`,
+            `ข้าม ${res.skipped.length} ตัวที่ต้องใส่ Doc NO. 4M ก่อน`,
             `Skipped ${res.skipped.length} fixture(s) that need 4M first`,
           ),
         )
@@ -631,7 +653,7 @@ export default function PMPage({ user }) {
       const res = await api.maintenanceVerifyBulk({
         sns: rows.map((row) => row.sn),
         result,
-        ...(result === 'NG' ? { outcome: bulkOutcome } : {}),
+        ...(result === 'NG' ? { outcome: bulkOutcome } : { maintenanceDone: true }),
         user,
       })
       toast.success(res?.message ? sm(res.message) : t('บันทึกสำเร็จ', 'Saved successfully'))
@@ -680,7 +702,6 @@ export default function PMPage({ user }) {
   const renderFixtureCard = (row) => {
     const states = (row.pmStates || []).filter((state) => CALENDAR_STATES.includes(state))
     const forms = Array.isArray(row.pmForms) ? row.pmForms : []
-    const percent = Math.min(100, Number(row.usagePercent) || 0)
     return (
       <div key={row.sn} className="rounded-xl border border-slate-200 bg-white p-2.5">
         <div className="flex items-start justify-between gap-2">
@@ -700,30 +721,22 @@ export default function PMPage({ user }) {
           ) : null}
           {states.length === 0 ? <span className="text-[10px] text-slate-400">-</span> : null}
         </div>
-        <div className="mt-2 flex items-center justify-between gap-2 text-[10px] font-semibold text-slate-500">
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[10px] font-semibold text-slate-500">
+          <span>
+            {t('PM Due', 'PM Due')} <b className="font-mono text-blue-700">{formatDate(pmDueDateOf(row))}</b>
+          </span>
           <span>
             {t('Exp', 'Exp')} <b className="font-mono text-slate-700">{formatDate(row.usage?.exp)}</b>
+            {row.pmDate ? ` · ${row.pmDate}` : ''}
           </span>
-          <span>
-            PM <b className="font-mono text-blue-700">{row.pmDate || '-'}</b>
-          </span>
-        </div>
-        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-          <div
-            className={cn('h-full rounded-full', percent >= 80 ? 'bg-orange-500' : 'bg-blue-500')}
-            style={{ width: `${percent}%` }}
-          />
         </div>
         <div className="mt-1 flex flex-wrap items-center justify-between gap-1 text-[9px] font-bold text-slate-400">
-          <span>
-            {Number(row.usage?.current) || 0}/{Number(row.usage?.max) || 0} · {percent}%
-          </span>
           {forms.length ? (
             <div className="flex flex-wrap gap-1">
-              {forms.map((url, index) => (
+              {forms.map((entry, index) => isDocUrl(entry) ? (
                 <a
-                  key={`${url}-${index}`}
-                  href={url}
+                  key={`${entry}-${index}`}
+                  href={entry}
                   target="_blank"
                   rel="noreferrer"
                   title={t('เปิดเอกสาร 4M', 'Open 4M document')}
@@ -731,6 +744,14 @@ export default function PMPage({ user }) {
                 >
                   <FileText className="h-3 w-3" /> 4M {index + 1}
                 </a>
+              ) : (
+                <span
+                  key={`${entry}-${index}`}
+                  title={`${t('Doc NO. 4M', '4M Doc NO.')}: ${entry}`}
+                  className="inline-flex max-w-[150px] items-center gap-1 truncate rounded-lg bg-red-50 px-1.5 py-0.5 font-bold text-red-600"
+                >
+                  <FileText className="h-3 w-3 shrink-0" /> {entry}
+                </span>
               ))}
             </div>
           ) : null}
@@ -745,8 +766,8 @@ export default function PMPage({ user }) {
         icon={Wrench}
         title={t('PM และซ่อมบำรุง', 'PM & Maintenance')}
         description={t(
-          'แยกงานเป็น 2 ส่วนชัดเจน: งาน PM กับตรวจรับงานซ่อม — เลือกแท็บแล้วทำตามลำดับบนลงล่าง',
-          'Two clear workspaces: PM and repair verification — pick a tab, then work top to bottom',
+          'แยกงานเป็น 2 ส่วนชัดเจน: PM กับ Maintenance — เลือกแท็บแล้วทำตามลำดับบนลงล่าง',
+          'Two clear workspaces: PM and Maintenance — pick a tab, then work top to bottom',
         )}
         actions={
           <Button variant="secondary" icon={RefreshCw} onClick={load}>
@@ -778,12 +799,12 @@ export default function PMPage({ user }) {
             <CalendarClock className="h-5 w-5" strokeWidth={2.2} />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-black">{t('งาน PM', 'PM work')}</span>
+            <span className="block text-sm font-black">{t('PM', 'PM')}</span>
             <span className={cn(
               'mt-0.5 block truncate text-[11px] font-semibold',
               activeTab === 'pm' ? 'text-blue-100' : 'text-slate-400',
             )}>
-              {t('แนบ 4M → อนุมัติ → เริ่ม PM', 'Attach 4M → approve → start PM')}
+              {t('ใส่ Doc NO. 4M → อนุมัติ → เริ่ม PM', 'Enter 4M Doc NO. → approve → start PM')}
             </span>
           </span>
           <span className={cn(
@@ -811,7 +832,7 @@ export default function PMPage({ user }) {
             <ShieldCheck className="h-5 w-5" strokeWidth={2.2} />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-black">{t('ตรวจรับงานซ่อม', 'Verify repairs')}</span>
+            <span className="block text-sm font-black">{t('Maintenance', 'Maintenance')}</span>
             <span className={cn(
               'mt-0.5 block truncate text-[11px] font-semibold',
               activeTab === 'maintenance' ? 'text-emerald-100' : 'text-slate-400',
@@ -866,10 +887,10 @@ export default function PMPage({ user }) {
             />
           </section>
 
-      <div className="grid gap-4 lg:grid-cols-[40%_60%]">
-        <section id="pm-calendar" className="order-2 scroll-mt-4">
-        <Card className="p-3 sm:p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="grid h-[600px] gap-4 lg:grid-cols-[40%_60%] lg:items-stretch">
+        <section id="pm-calendar" className="order-2 flex h-full min-h-0 scroll-mt-4 flex-col">
+        <Card className="flex h-full min-h-0 flex-col p-3 sm:p-4">
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <CalendarDays className="h-4 w-4 text-blue-600" />
               <div className="min-w-0">
@@ -910,7 +931,7 @@ export default function PMPage({ user }) {
             </div>
           </div>
           {showCalendar ? (
-            <>
+            <div className="min-h-0 flex-1 overflow-y-auto pr-0.5">
               <div className="mt-2 flex flex-wrap gap-1">
                 {[...CALENDAR_STATES, 'planned'].map((state) => (
                   <Badge key={state} tone={PM_TONE[state]} dot>
@@ -972,15 +993,15 @@ export default function PMPage({ user }) {
               })}
             </div>
             )}
-            </>
+            </div>
           ) : null}
         </Card>
       </section>
 
       {/* ---------- Today's work ---------- */}
-      <section id="pm-actions" className="order-1 scroll-mt-4">
-        <Card className="overflow-hidden">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5">
+      <section id="pm-actions" className="order-1 flex h-full min-h-0 scroll-mt-4 flex-col">
+        <Card className="flex h-full min-h-0 flex-col overflow-hidden">
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5">
             <div className="flex min-w-0 items-center gap-3">
               <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white">
                 <ClipboardList className="h-4 w-4" strokeWidth={2.2} />
@@ -991,6 +1012,11 @@ export default function PMPage({ user }) {
                   {t('ทำตามขั้น 1 → 2 → 3 บนลงล่าง (Verify อยู่แท็บอื่น)', 'Work steps 1 → 2 → 3 top to bottom (Verify is in the other tab)')}
                 </p>
               </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" variant="secondary" icon={ClipboardList} onClick={() => openList()}>
+                {t('View list', 'View list')}
+              </Button>
             </div>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] font-bold">
               <span className="flex items-center gap-1.5 text-red-600">
@@ -1013,13 +1039,13 @@ export default function PMPage({ user }) {
           ) : error || mError ? (
             <ErrorState message={sm(error || mError)} onRetry={load} />
           ) : (
-            <div className="divide-y divide-slate-100">
+            <div className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto">
               {/* 4M comes first because it blocks everything else. */}
               <div className="px-4 py-3 sm:px-5">
                 <div className="flex items-center justify-between gap-2">
                   <p className="flex items-center gap-2 text-[13px] font-black text-red-700">
                     <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-red-600 text-[11px] font-black text-white">1</span>
-                    <AlertTriangle className="h-4 w-4" /> {t('แนบ 4M ก่อนแตะของ', 'Attach 4M before editing')}
+                    <AlertTriangle className="h-4 w-4" /> {t('ใส่ Doc NO. 4M ก่อนแตะของ', 'Enter the 4M Doc NO. before editing')}
                   </p>
                   <span className="text-[10px] font-bold text-slate-400">{t('เฉพาะที่มี Line + Model', 'Grouped fixtures only')}</span>
                 </div>
@@ -1035,18 +1061,18 @@ export default function PMPage({ user }) {
                           </p>
                           <p className="mt-0.5 text-[10px] font-semibold text-red-600">
                             {t(
-                              `${group.blockedRows.length} ตัวเกิน 3 วัน · แก้หรือเริ่ม PM ไม่ได้จนกว่าแนบ 4M`,
-                              `${group.blockedRows.length} fixture(s) over 3 days — edits and PM stay blocked until 4M is attached`,
+                              `${group.blockedRows.length} ตัวเกิน 3 วัน · แก้หรือเริ่ม PM ไม่ได้จนกว่าใส่ Doc NO. 4M`,
+                              `${group.blockedRows.length} fixture(s) over 3 days — edits and PM stay blocked until the 4M Doc NO. is saved`,
                             )}
                           </p>
                         </div>
                         <Button
                           size="sm"
-                          variant="danger"
-                          icon={FileText}
-                          onClick={() => openUploadGroup(group.line, group.model)}
+                          variant="secondary"
+                          icon={ClipboardList}
+                          onClick={() => openList(group.line, group.model)}
                         >
-                          {t('แนบ 4M', 'Attach 4M')}
+                          {t('View list', 'View list')}
                         </Button>
                       </div>
                     ))}
@@ -1056,9 +1082,9 @@ export default function PMPage({ user }) {
                   open={!!uploadGroup}
                   onClose={() => {
                     setUploadGroup(null)
-                    setUploadFile(null)
+                    setDocNo('')
                   }}
-                  title={t('แนบเอกสาร 4M ให้ทั้งกลุ่ม', 'Attach the 4M document to the whole group')}
+                  title={t('ใส่ Doc NO. 4M ให้ทั้งกลุ่ม', 'Enter the 4M Doc NO. for the whole group')}
                   subtitle={uploadGroup ? `${uploadGroup.line} / ${uploadGroup.model}` : ''}
                   icon={FileText}
                   tone="red"
@@ -1070,7 +1096,7 @@ export default function PMPage({ user }) {
                         variant="secondary"
                         onClick={() => {
                           setUploadGroup(null)
-                          setUploadFile(null)
+                          setDocNo('')
                         }}
                         disabled={uploadBusy}
                       >
@@ -1079,39 +1105,39 @@ export default function PMPage({ user }) {
                       <Button
                         type="button"
                         variant="danger"
-                        icon={Upload}
-                        disabled={uploadBusy || !uploadFile}
-                        onClick={uploadGroupForms}
+                        icon={FileText}
+                        disabled={uploadBusy || !docNo.trim()}
+                        onClick={submitGroupDocNo}
                       >
-                        {uploadBusy ? t('กำลังแนบ…', 'Uploading…') : t('แนบให้ทั้งกลุ่ม', 'Attach to group')}
+                        {uploadBusy
+                          ? t('กำลังบันทึก…', 'Saving…')
+                          : t('บันทึกให้ทั้งกลุ่ม', 'Save to group')}
                       </Button>
                     </div>
                   }
                 >
                   <div className="space-y-4">
                     <p className="text-[12px] font-semibold text-red-700">
-                      {t('แนบไฟล์ + บอกจำนวนวันที่จะทำ PM ระบบจะใช้กับทุกตัวในกลุ่มนี้', 'Attach the file and set the PM days — it applies to every fixture in this group')}
+                      {t('ใส่ Doc NO. + บอกจำนวนวันที่จะทำ PM ระบบจะใช้กับทุกตัวในกลุ่มนี้', 'Enter the Doc NO. and the PM days — it applies to every fixture in this group')}
                     </p>
-                    <label className="flex flex-col gap-2 rounded-2xl border-2 border-dashed border-red-200 bg-red-50/40 p-4 text-[11px] font-bold text-red-700">
-                      {t('ไฟล์ 4M (PDF / Word / Excel / รูปภาพ)', '4M file (PDF / Word / Excel / image)')}
-                      <input
-                        type="file"
-                        accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,image/*"
+                    <label className="flex w-full flex-col gap-1 text-[10px] font-bold text-red-700">
+                      {t('Doc NO. 4M', '4M Doc NO.')}
+                      <Input
+                        value={docNo}
                         disabled={uploadBusy}
-                        onChange={(event) => {
-                          setUploadFile(event.target.files?.[0] || null)
-                          event.target.value = ''
-                        }}
-                        className="block w-full text-[12px] font-medium text-slate-700 file:mr-3 file:rounded-xl file:border-0 file:bg-red-600 file:px-4 file:py-2 file:text-[12px] file:font-black file:text-white hover:file:bg-red-700"
+                        maxLength={120}
+                        placeholder={t('เช่น 4M-2026-001', 'e.g. 4M-2026-001')}
+                        onChange={(event) => setDocNo(event.target.value)}
+                        className="field-input-sm font-mono"
                       />
                     </label>
-                    {uploadFile ? (
+                    {docNo.trim() ? (
                       <div className="rounded-xl bg-slate-50 px-3 py-2 font-mono text-[11px] text-slate-700">
-                        {uploadFile.name}
+                        Doc NO.: {docNo.trim()}
                       </div>
                     ) : (
                       <p className="text-[11px] font-semibold text-slate-400">
-                        {t('ยังไม่ได้เลือกไฟล์', 'No file selected yet')}
+                        {t('ยังไม่ได้กรอก Doc NO.', 'No Doc NO. entered yet')}
                       </p>
                     )}
                     <label className="flex w-full flex-col gap-1 text-[10px] font-bold text-red-700 sm:w-[160px]">
@@ -1132,7 +1158,7 @@ export default function PMPage({ user }) {
                     )}>
                       {Number(uploadDays) > 7
                         ? t('เกิน 7 วัน → ระบบตั้งเป็น PM Pending รอ Admin กด ยืนยัน / Reject ก่อนเข้าซ่อม', 'Over 7 days → PM Pending, waiting for Admin to Approve / Reject before repair')
-                        : t('ไม่เกิน 7 วัน → แนบ 4M แล้วสถานะยังเป็น PM รอกด “กำลังทำ PM”', '7 days or less → 4M attached, status stays PM until “Start PM”')}
+                        : t('ไม่เกิน 7 วัน → บันทึก Doc NO. แล้วสถานะยังเป็น PM รอกด “กำลังทำ PM”', '7 days or less → Doc NO. saved, status stays PM until “Start PM”')}
                     </p>
                   </div>
                 </Modal>
@@ -1247,33 +1273,22 @@ export default function PMPage({ user }) {
       </section>
       </div>
 
-      <div className="flex justify-center">
-        <button
-          type="button"
-          onClick={() => setShowDetails((value) => !value)}
-          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-[11px] font-bold text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50"
+      {listOpen ? (
+        <Modal
+          open={listOpen}
+          onClose={() => setListOpen(false)}
+          title={t('รายการทั้งหมดตาม Line → Model', 'Full list by line → model')}
+          subtitle={t(`${lineGroups.length} Line · ${groupRows.length} Fixture`, `${lineGroups.length} lines · ${groupRows.length} fixtures`)}
+          icon={ClipboardList}
+          tone="blue"
+          size="2xl"
+          bodyClassName="p-3 sm:p-4"
         >
-          <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', showDetails && 'rotate-180')} />
-          {showDetails
-            ? t('ซ่อนรายการทั้งหมด', 'Hide full list')
-            : t('ดูรายการทั้งหมดตาม Line → Model', 'View full list by line → model')}
-        </button>
-      </div>
-
-      {showDetails ? (
-        <section id="pm-worklist" className="scroll-mt-4 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <ClipboardList className="h-4 w-4 text-blue-500" />
-              <h2 className="text-[13px] font-bold text-slate-800">{t('รายการทั้งหมดตาม Line → Model', 'Full list by line → model')}</h2>
-              <span className="rounded-lg bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">
-                {lineGroups.length} {t('Line', 'lines')} · {groupRows.length} {t('Fixture', 'fixtures')}
-              </span>
-            </div>
-            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 pb-2">
               <select
                 aria-label={t('กรองตาม Line', 'Filter by line')}
-                className="field-input-sm w-full sm:w-40"
+                className="field-input-sm w-full sm:w-32"
                 value={lineFilter}
                 onChange={(event) => {
                   setLineFilter(event.target.value)
@@ -1283,14 +1298,12 @@ export default function PMPage({ user }) {
               >
                 <option value="">{t('ทุก Line', 'All lines')}</option>
                 {lineOptions.map((line) => (
-                  <option key={line} value={line}>
-                    {line}
-                  </option>
+                  <option key={line} value={line}>{line}</option>
                 ))}
               </select>
               <select
                 aria-label={t('กรองตาม Model', 'Filter by model')}
-                className="field-input-sm w-full font-mono sm:w-52"
+                className="field-input-sm w-full font-mono sm:w-44"
                 value={modelFilter}
                 onChange={(event) => {
                   setModelFilter(event.target.value)
@@ -1299,152 +1312,155 @@ export default function PMPage({ user }) {
               >
                 <option value="">{t('ทุก Model', 'All models')}</option>
                 {modelOptions.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
+                  <option key={model} value={model}>{model}</option>
                 ))}
               </select>
-              <div className="w-full sm:w-64">{searchBox(query, setQuery, t('ค้นหา Line / Model / SN…', 'Search line / model / SN…'))}</div>
+              <div className="w-full sm:w-56">{searchBox(query, setQuery, t('ค้นหา Line / Model / SN…', 'Search line / model / SN…'))}</div>
+              <Button size="sm" variant="secondary" onClick={() => {
+                setLineFilter('')
+                setModelFilter('')
+                setQuery('')
+                setTarget(null)
+              }}>
+                {t('ล้างตัวกรอง', 'Clear filters')}
+              </Button>
             </div>
-          </div>
 
-          {loading ? (
-            <Card>
+            {loading ? (
               <Spinner label={t('กำลังโหลดข้อมูล…', 'Loading…')} />
-            </Card>
-          ) : error ? (
-            <Card>
+            ) : error ? (
               <ErrorState message={sm(error)} onRetry={load} />
-            </Card>
-          ) : lineGroups.length === 0 ? (
-            <Card>
+            ) : lineGroups.length === 0 ? (
               <EmptyState
                 icon={Layers3}
                 title={t('ไม่มี Line ที่ตรงกับเงื่อนไข', 'No matching line')}
                 description={t('ลองเปลี่ยน Line / Model หรือคำค้นหา', 'Try another line, model, or search term')}
               />
-            </Card>
-          ) : (
-            <div className="space-y-3">
-              {lineGroups.map((group) => {
-                const open = isLineExpanded(group.line)
-                return (
-                  <Card key={group.line} className="overflow-hidden">
-                    <button
-                      type="button"
-                      onClick={() => toggleLine(group.line)}
-                      aria-expanded={open}
-                      className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-50"
-                    >
-                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-                        <Layers3 className="h-4 w-4" strokeWidth={2.2} />
-                      </span>
-                      <span className="min-w-0">
-                        <span className="block text-[13px] font-black text-slate-900">
-                          {t('Line', 'Line')} {group.line}
+            ) : (
+              <div className="space-y-2">
+                {lineGroups.map((group) => {
+                  const open = isLineExpanded(group.line)
+                  return (
+                    <div key={group.line} className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+                      <button
+                        type="button"
+                        onClick={() => toggleLine(group.line)}
+                        aria-expanded={open}
+                        className="flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-slate-50"
+                      >
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
+                          <Layers3 className="h-3.5 w-3.5" strokeWidth={2.2} />
                         </span>
-                        <span className="block text-[10px] font-semibold text-slate-400">
-                          {group.models.length} {t('Model', 'models')} · {group.rows.length} {t('Fixture', 'fixtures')}
-                          {group.maintenanceCount > 0
-                            ? ` · ${group.maintenanceCount} ${t('กำลังซ่อม', 'in maintenance')}`
-                            : ''}
+                        <span className="min-w-0">
+                          <span className="block truncate text-[11px] font-black text-slate-900">
+                            {t('Line', 'Line')} {group.line}
+                          </span>
+                          <span className="block text-[9px] font-semibold text-slate-400">
+                            {group.models.length} {t('Model', 'models')} · {group.rows.length} {t('Fixture', 'fixtures')}
+                            {group.maintenanceCount > 0
+                              ? ` · ${group.maintenanceCount} ${t('กำลังซ่อม', 'in maintenance')}`
+                              : ''}
+                          </span>
                         </span>
-                      </span>
-                      <span className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
-                        <Badge tone="red">{t('เกินกำหนด', 'Overdue')} {group.stats.overDue}</Badge>
-                        <Badge tone="purple">{t('ถึงกำหนด', 'On due')} {group.stats.onDue}</Badge>
-                        <Badge tone="orange">{t('แจ้งล่วงหน้า', 'Pre-alert')} {group.stats.preAlert}</Badge>
-                      </span>
-                      <ChevronDown
-                        className={cn(
-                          'h-4 w-4 shrink-0 text-slate-400 transition-transform',
-                          open && 'rotate-180',
-                        )}
-                      />
-                    </button>
+                        <span className="ml-auto flex flex-wrap items-center justify-end gap-1">
+                          <Badge tone="red">{t('เกินกำหนด', 'Overdue')} {group.stats.overDue}</Badge>
+                          <Badge tone="purple">{t('ถึงกำหนด', 'On due')} {group.stats.onDue}</Badge>
+                          <Badge tone="orange">{t('แจ้งล่วงหน้า', 'Pre-alert')} {group.stats.preAlert}</Badge>
+                        </span>
+                        <ChevronDown
+                          className={cn(
+                            'h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform',
+                            open && 'rotate-180',
+                          )}
+                        />
+                      </button>
 
-                    {open ? (
-                      <div className="space-y-3 border-t border-slate-100 bg-slate-50/50 p-3 sm:p-4">
-                        {group.models.map((modelGroup) => {
-                          const modelKey = `${group.line}|${modelGroup.model}`
-                          const limit = showAllFixtures[modelKey] ? modelGroup.rows.length : 12
-                          return (
-                            <div key={modelKey} className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-3 py-2.5">
-                                <div className="min-w-0">
-                                  <p className="truncate font-mono text-[12px] font-black text-slate-800">
-                                    {modelGroup.model}
-                                  </p>
-                                  <p className="text-[10px] font-semibold text-slate-400">
-                                    {modelGroup.rows.length} {t('Fixture', 'fixtures')} ·{' '}
-                                    {t('พร้อมเริ่ม PM', 'ready')} {modelGroup.planRows.length} ·{' '}
-                                    {t('ติด 4M', '4M blocked')} {modelGroup.blockedRows.length}
-                                  </p>
-                                </div>
-                                <div className="flex flex-wrap gap-2">
-                                  {modelGroup.grouped ? (
+                      {open ? (
+                        <div className="space-y-2 border-t border-slate-100 bg-slate-50/50 p-2">
+                          {group.models.map((modelGroup) => {
+                            const modelKey = `${group.line}|${modelGroup.model}`
+                            const limit = showAllFixtures[modelKey] ? modelGroup.rows.length : 12
+                            return (
+                              <div key={modelKey} className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+                                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-2 py-1.5">
+                                  <div className="min-w-0">
+                                    <p className="truncate font-mono text-[11px] font-black text-slate-800">
+                                      {modelGroup.model}
+                                    </p>
+                                    <p className="text-[9px] font-semibold text-slate-400">
+                                      {modelGroup.rows.length} {t('Fixture', 'fixtures')} ·{' '}
+                                      {t('พร้อมเริ่ม PM', 'ready')} {modelGroup.planRows.length} ·{' '}
+                                      {t('ติด 4M', '4M blocked')} {modelGroup.blockedRows.length}
+                                    </p>
+                                  </div>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {modelGroup.grouped ? (
+                                      <Button
+                                        size="sm"
+                                        variant="secondary"
+                                        icon={FileText}
+                                        onClick={() => openUploadGroup(group.line, modelGroup.model)}
+                                      >
+                                        {t('ใส่ Doc NO. กลุ่มนี้', 'Enter Doc NO. 4M')}
+                                      </Button>
+                                    ) : null}
                                     <Button
                                       size="sm"
-                                      variant="secondary"
-                                      icon={FileText}
-                                      onClick={() => openUploadGroup(group.line, modelGroup.model)}
+                                      variant="purple"
+                                      icon={CalendarClock}
+                                      disabled={busy || modelGroup.planRows.length === 0}
+                                      onClick={() => {
+                                        setListOpen(false)
+                                        openGroupPlanFor(group.line, modelGroup.model)
+                                      }}
                                     >
-                                      {t('แนบ 4M กลุ่มนี้', 'Attach 4M')}
+                                      {t('กำลังทำ PM กลุ่มนี้', 'Start PM this group')}
                                     </Button>
-                                  ) : null}
-                                  <Button
-                                    size="sm"
-                                    variant="purple"
-                                    icon={CalendarClock}
-                                    disabled={busy || modelGroup.planRows.length === 0}
-                                    onClick={() => openGroupPlanFor(group.line, modelGroup.model)}
-                                  >
-                                    {t('กำลังทำ PM กลุ่มนี้', 'Start PM this group')}
-                                  </Button>
+                                  </div>
                                 </div>
+                                {modelGroup.blockedRows.length > 0 ? (
+                                  <p className="border-b border-red-100 bg-red-50/70 px-2 py-1 text-[9px] font-bold text-red-600">
+                                    {t(
+                                      `ต้องใส่ Doc NO. 4M ${modelGroup.blockedRows.length} ตัวก่อนเริ่ม PM กลุ่มนี้`,
+                                      `${modelGroup.blockedRows.length} fixture(s) need a 4M Doc NO. before starting PM for this group`,
+                                    )}
+                                  </p>
+                                ) : null}
+                                <div className="grid gap-1.5 p-2 sm:grid-cols-2 xl:grid-cols-4">
+                                  {modelGroup.rows.slice(0, limit).map(renderFixtureCard)}
+                                </div>
+                                {modelGroup.rows.length > 12 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setShowAllFixtures((current) => ({
+                                        ...current,
+                                        [modelKey]: !current[modelKey],
+                                      }))
+                                    }
+                                    className="w-full border-t border-slate-100 py-1.5 text-center text-[9px] font-black text-blue-600 hover:bg-blue-50"
+                                  >
+                                    {showAllFixtures[modelKey]
+                                      ? t('แสดงน้อยลง', 'Show less')
+                                      : t(
+                                          `แสดง Fixture ทั้งหมด ${modelGroup.rows.length} ตัว`,
+                                          `Show all ${modelGroup.rows.length} fixtures`,
+                                        )}
+                                  </button>
+                                ) : null}
                               </div>
-                              {modelGroup.blockedRows.length > 0 ? (
-                                <p className="border-b border-red-100 bg-red-50/70 px-3 py-1.5 text-[10px] font-bold text-red-600">
-                                  {t(
-                                    `ต้องแนบ 4M ${modelGroup.blockedRows.length} ตัวก่อนเริ่ม PM กลุ่มนี้`,
-                                    `${modelGroup.blockedRows.length} fixture(s) need 4M before starting PM for this group`,
-                                  )}
-                                </p>
-                              ) : null}
-                              <div className="grid gap-2 p-3 sm:grid-cols-2 xl:grid-cols-3">
-                                {modelGroup.rows.slice(0, limit).map(renderFixtureCard)}
-                              </div>
-                              {modelGroup.rows.length > 12 ? (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setShowAllFixtures((current) => ({
-                                      ...current,
-                                      [modelKey]: !current[modelKey],
-                                    }))
-                                  }
-                                  className="w-full border-t border-slate-100 py-2 text-center text-[10px] font-black text-blue-600 hover:bg-blue-50"
-                                >
-                                  {showAllFixtures[modelKey]
-                                    ? t('แสดงน้อยลง', 'Show less')
-                                    : t(
-                                        `แสดง Fixture ทั้งหมด ${modelGroup.rows.length} ตัว`,
-                                        `Show all ${modelGroup.rows.length} fixtures`,
-                                      )}
-                                </button>
-                              ) : null}
-                            </div>
-                          )
-                        })}
-                      </div>
-                    ) : null}
-                  </Card>
-                )
-              })}
-            </div>
-          )}
-        </section>
-        ) : null}
+                            )
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </Modal>
+      ) : null}
         </>
       ) : (
         <section id="pm-verify" className="scroll-mt-4">
@@ -1456,9 +1472,9 @@ export default function PMPage({ user }) {
                     <ShieldCheck className="h-5 w-5" strokeWidth={2.2} />
                   </span>
                   <div className="min-w-0">
-                    <h2 className="text-base font-black text-slate-900">{t('ตรวจรับงานซ่อม', 'Verify repair queue')}</h2>
+                    <h2 className="text-base font-black text-slate-900">{t('Maintenance', 'Maintenance')}</h2>
                     <p className="mt-1 text-[12px] font-semibold text-slate-600">
-                      {t('เลือก Fixture ทีละตัวหรือทั้ง Line → กด Done (OK) หรือ NG', 'Tick fixtures or a whole line → press Done (OK) or NG')}
+                      {t('เลือก Fixture ทีละตัวหรือทั้ง Line → กด Maintenance เสร็จ (Done) หรือ NG', 'Tick fixtures or a whole line → press Maintenance done (OK) or NG')}
                     </p>
                   </div>
                 </div>
@@ -1547,7 +1563,8 @@ export default function PMPage({ user }) {
                                 </label>
                                 <div className="mt-2 grid gap-1.5 pl-6 sm:grid-cols-2">
                                   {modelGroup.rows.map((row) => {
-                                    const days = daysUntil(row.usage?.exp)
+                                    const due = pmDueDateOf(row)
+                                    const days = daysUntil(due)
                                     return (
                                       <label
                                         key={row.sn}
@@ -1562,7 +1579,7 @@ export default function PMPage({ user }) {
                                         <span className="min-w-0 flex-1">
                                           <span className="block truncate font-mono text-[12px] font-black text-slate-800">{row.sn}</span>
                                           <span className="mt-0.5 block text-[10px] font-semibold text-slate-400">
-                                            {t('ครบกำหนด', 'Due')}: {formatDate(row.usage?.exp)}
+                                            {t('ครบกำหนด PM', 'PM due')}: {formatDate(due)}
                                             {days === null
                                               ? ''
                                               : days < 0
@@ -1597,7 +1614,7 @@ export default function PMPage({ user }) {
                       disabled={selectedRows.length === 0}
                       onClick={() => openBulkVerify('OK')}
                     >
-                      {t('Done (OK)', 'Done (OK)')}
+                      {t('Maintenance เสร็จ (Done)', 'Maintenance done (OK)')}
                     </Button>
                     <Button
                       size="sm"
@@ -1659,7 +1676,7 @@ export default function PMPage({ user }) {
                   <li key={`${row.sn}-${index}`} className="text-[11px] font-bold text-slate-700">
                     <span className="font-mono">{row.sn}</span>
                     <span className="ml-2 font-medium text-slate-400">
-                      {row.model || '-'} · {formatDate(row.usage?.exp)}
+                      {row.model || '-'} · {t('PM due', 'PM due')} {formatDate(pmDueDateOf(row))}
                     </span>
                   </li>
                 ))}
@@ -1668,7 +1685,7 @@ export default function PMPage({ user }) {
             {target.blocked?.length ? (
               <div className="rounded-xl border border-red-200 bg-red-50/60 p-3">
                 <p className="text-[10px] font-black uppercase tracking-[0.12em] text-red-600">
-                  {t('ข้าม — ต้องแนบเอกสาร 4M ก่อน', 'Skipped — 4M document required first')}
+                  {t('ข้าม — ต้องใส่ Doc NO. 4M ก่อน', 'Skipped — 4M Doc NO. required first')}
                 </p>
                 <ul className="mt-2 space-y-1">
                   {target.blocked.map((row, index) => (
@@ -1703,8 +1720,8 @@ export default function PMPage({ user }) {
           ? bulkVerify.result === 'OK'
             ? t(`Done (OK) · ${bulkVerify.rows.length} ตัว`, `Done (OK) · ${bulkVerify.rows.length} fixture(s)`)
             : t(`NG · ${bulkVerify.rows.length} ตัว`, `NG · ${bulkVerify.rows.length} fixture(s)`)
-          : t('ตรวจรับคิวซ่อม', 'Verify repair queue')}
-        subtitle={t('ตรวจรับคิวซ่อม', 'Verify repair queue')}
+          : t('Maintenance', 'Maintenance')}
+        subtitle={t('ยืนยันผล Maintenance ก่อนปิดงาน Order', 'Confirm maintenance result before closing the order')}
         icon={ShieldCheck}
         tone={bulkVerify?.result === 'OK' ? 'emerald' : 'red'}
         size="md"
@@ -1731,8 +1748,8 @@ export default function PMPage({ user }) {
             {bulkVerify.result === 'OK' ? (
               <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-[11px] font-bold text-emerald-700">
                 {t(
-                  'Fixture ที่ Done จะกลับเข้า In Stock — นาฬิกา PM 90 วันเริ่มตอนจ่ายออกครั้งต่อไป',
-                  'Done fixtures return to In Stock — the 90-day PM clock restarts at the next issue',
+                  'Fixture ที่ยืนยัน Maintenance เสร็จจะกลับเข้า In Stock และปิดคำขอ Order ที่รออยู่ให้ด้วย — นาฬิกา PM 90 วันเริ่มตอนจ่ายออกครั้งต่อไป',
+                  'Confirmed fixtures return to In Stock and close any linked waiting order — the 90-day PM clock restarts at the next issue',
                 )}
               </div>
             ) : (

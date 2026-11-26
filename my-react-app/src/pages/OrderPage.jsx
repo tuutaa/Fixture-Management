@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowRight,
   CheckCircle2,
@@ -19,6 +19,7 @@ import {
   Spinner,
 } from '../components/ui/Card'
 import Button from '../components/ui/Button'
+import ConfirmDialog from '../components/ui/ConfirmDialog'
 import Modal from '../components/ui/Modal'
 import { Input } from '../components/ui/Field'
 import { useToast } from '../components/ui/Toast'
@@ -64,6 +65,12 @@ const personLabel = (person) => {
   if (!person) return '-'
   const name = [person.name, person.lastname].filter(Boolean).join(' ').trim()
   return name || person.empId || '-'
+}
+
+const isRequesterOf = (request, user) => {
+  const actor = String(user?.userId || user?.empId || '').trim().toLowerCase()
+  const requester = String(request?.requestInfo?.empId || '').trim().toLowerCase()
+  return Boolean(actor && actor === requester)
 }
 
 const InfoRow = ({ label, children }) => (
@@ -297,7 +304,9 @@ export default function OrderPage({ user }) {
   const [compareLoading, setCompareLoading] = useState(false)
   const [compareError, setCompareError] = useState('')
   const [busyId, setBusyId] = useState('')
-  const { t, requestStatus, requestType } = useLabels()
+  const [maintenancePrompt, setMaintenancePrompt] = useState(null)
+  const maintenanceResolver = useRef(null)
+  const { t, ui, requestStatus, requestType } = useLabels()
   const sm = useServerMessage()
 
   const FILTERS = [
@@ -426,11 +435,10 @@ export default function OrderPage({ user }) {
     }
   }
 
-  const handleVerify = async (request) => {
+  const runVerify = async (request, options = {}) => {
     setBusyId(request.request_id)
     try {
-      const payload = await api.verifyRequest(request.request_id, user)
-      toast.success(sm(payload?.message || t('Verify สำเร็จ', 'Verify successful')))
+      const payload = await api.verifyRequest(request.request_id, user, options)
       await reloadRows()
       if (payload?.request) {
         setDetail((prev) => (prev?.request_id === request.request_id ? payload.request : prev))
@@ -442,6 +450,37 @@ export default function OrderPage({ user }) {
     } finally {
       setBusyId('')
     }
+  }
+
+  // Maintenance OK only clears the technician side. The requester must come
+  // back and press Verify before the order closes and history is finalised.
+  const runFinalVerify = async (request) => {
+    const payload = await runVerify(request, { finalApproval: true })
+    if (payload) toast.success(sm(payload.message))
+  }
+
+  // The return scan finishes with a question: send these SNs to Maintenance or
+  // keep the old In Stock close. OrderScanModal awaits the returned promise.
+  const handleVerify = (request) => new Promise((resolve) => {
+    if (request?.maintenancePending) {
+      resolve(false)
+      return
+    }
+    maintenanceResolver.current = resolve
+    setMaintenancePrompt(request)
+  })
+
+  const chooseMaintenance = async (wantsMaintenance) => {
+    const request = maintenancePrompt
+    const resolve = maintenanceResolver.current
+    setMaintenancePrompt(null)
+    maintenanceResolver.current = null
+    if (!request) {
+      resolve?.(false)
+      return
+    }
+    const payload = await runVerify(request, { maintenance: wantsMaintenance })
+    resolve?.(payload)
   }
 
   const confirmAction = async () => {
@@ -514,6 +553,11 @@ export default function OrderPage({ user }) {
   }, [detail])
 
   const acceptModelTo = acceptModal ? resolveChangeModel(acceptModal) : ''
+  const maintenanceReturnCount = maintenancePrompt
+    ? (Array.isArray(maintenancePrompt.scanMatches)
+        ? maintenancePrompt.scanMatches.filter((item) => item.action === 'return').length
+        : 0) || maintenancePrompt.returnedItems?.length || 0
+    : 0
 
   return (
     <div className="space-y-4">
@@ -549,13 +593,16 @@ export default function OrderPage({ user }) {
           {filtered.map((r) => {
             const busy = busyId === r.request_id
             const status = r.status
-            const style = STATUS_STYLE[status] || { bg: 'bg-white', badge: 'bg-slate-600', label: status || 'Unknown' }
+            const style = STATUS_STYLE[status] || { bg: 'bg-white', badge: 'bg-slate-600', label: status || ui('notAvailable') }
             const statusLabel = STATUS_STYLE[status]
               ? requestStatus(status)
               : (status || t('ไม่ทราบ', 'Unknown'))
             const changeModel = resolveChangeModel(r)
             const approvals = Array.isArray(r.returnApprovals) ? r.returnApprovals : []
             const hasApproval = (role) => approvals.some((item) => item.role === role)
+            const maintenanceDone = Boolean(r.maintenanceCompletedAt)
+            const waitingFinal = maintenanceDone && !r.requesterFinalApproval
+            const requesterReady = isRequesterOf(r, user)
             return (
               <div
                 key={r.request_id}
@@ -634,6 +681,24 @@ export default function OrderPage({ user }) {
                         {hasApproval('assignee') ? <CheckCircle2 className="mr-1 inline h-3 w-3" /> : null}
                         {t('ช่าง', 'Technician')}
                       </span>
+                      {r.maintenancePending ? (
+                        <span
+                          className="rounded-lg bg-orange-100 px-2 py-1 text-orange-700"
+                          title={t('รอ Maintenance แล้วผู้ขอต้อง Verify ปิดคำขอ', 'Waiting for maintenance and requester approve')}
+                        >
+                          <Wrench className="mr-1 inline h-3 w-3" />
+                          {t('รอ Maintenance', 'Waiting for maintenance')}
+                        </span>
+                      ) : null}
+                      {waitingFinal ? (
+                        <span
+                          className="rounded-lg bg-blue-100 px-2 py-1 text-blue-700"
+                          title={t('Maintenance เสร็จแล้ว รอผู้ขอ Verify เพื่อปิดคำขอ', 'Maintenance done — waiting for requester approve')}
+                        >
+                          <CheckCircle2 className="mr-1 inline h-3 w-3" />
+                          {t('รอผู้ขอ Verify', 'Waiting for requester approve')}
+                        </span>
+                      ) : null}
                     </div>
                   ) : null}
 
@@ -715,16 +780,41 @@ export default function OrderPage({ user }) {
                   ) : null}
 
                   {status === 'Verify' ? (
-                    <Button
-                      size="sm"
-                      variant="success"
-                      className="h-9 flex-1"
-                      disabled={busy}
-                      icon={Undo2}
-                      onClick={() => { setScanPhase('return'); setScanRequest(r) }}
-                    >
-                      {t('Verify / ยืนยัน', 'Verify / Confirm')}
-                    </Button>
+                    r.maintenancePending ? (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="h-9 flex-1"
+                        disabled
+                        icon={Wrench}
+                      >
+                        {t('รอ Maintenance และผู้ขอ Verify', 'Waiting for maintenance & requester')}
+                      </Button>
+                    ) : waitingFinal ? (
+                      <Button
+                        size="sm"
+                        variant={requesterReady ? 'success' : 'secondary'}
+                        className="h-9 flex-1"
+                        disabled={busy || !requesterReady}
+                        icon={requesterReady ? Undo2 : CheckCircle2}
+                        onClick={() => runFinalVerify(r)}
+                      >
+                        {requesterReady
+                          ? t('Verify (ผู้ขอ)', 'Verify (requester)')
+                          : t('รอผู้ขอ Verify', 'Waiting for requester')}
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="success"
+                        className="h-9 flex-1"
+                        disabled={busy}
+                        icon={Undo2}
+                        onClick={() => { setScanPhase('return'); setScanRequest(r) }}
+                      >
+                        {t('Verify / ยืนยัน', 'Verify / Confirm')}
+                      </Button>
+                    )
                   ) : null}
                   </div>
                 </div>
@@ -943,6 +1033,21 @@ export default function OrderPage({ user }) {
           </div>
         ) : null}
       </Modal>
+
+      <ConfirmDialog
+        open={Boolean(maintenancePrompt)}
+        onClose={() => chooseMaintenance(false)}
+        onConfirm={() => chooseMaintenance(true)}
+        title={t('ต้องการส่ง Fixture เข้าซ่อมบำรุงหรือไม่?', 'Send these fixtures to Maintenance?')}
+        message={t(
+          `Fixture ${maintenanceReturnCount} ตัวที่รับคืนในคำขอ ${maintenancePrompt?.request_id || '-'} จะถูกเปลี่ยนเป็น Maintenance ทั้งหมด และคำขอจะยังไม่ปิดจนกว่า Verify Maintenance เสร็จในหน้า PM & Maintenance`,
+          `All ${maintenanceReturnCount} returned fixtures in ${maintenancePrompt?.request_id || '-'} will become Maintenance. The order stays open until Maintenance is verified in PM & Maintenance.`,
+        )}
+        confirmLabel={t('ต้องการ — Maintenance', 'Yes — Maintenance')}
+        cancelLabel={t('ไม่ต้อง — คืน Stock', 'No — back to stock')}
+        tone="orange"
+        busy={Boolean(busyId)}
+      />
 
       <OrderScanModal
         open={Boolean(scanRequest)}

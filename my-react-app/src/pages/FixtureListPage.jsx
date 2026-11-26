@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   Boxes,
+  ChevronDown,
   PackageCheck,
   RotateCcw,
   Search,
@@ -38,7 +39,7 @@ import { useLabels, useServerMessage } from '../lib/i18n'
 
 /* Preferred column order for the fixture-list matrix. */
 const POSITION_ORDER = [
-  'Stopport Impeller',
+  'Support Impeller',
   'Permanence yoke',
   'Insert Rot',
   'Stopper Yoke',
@@ -137,6 +138,10 @@ const normPosition = (value) =>
     .trim()
     .toLowerCase()
 
+/* Excel cells carry fixture bases; registered fixtures carry serials such as
+ * "BASE-01". Strip the revision suffix so both forms can be matched. */
+const baseOf = (value) => String(value || '').trim().replace(/-\d+$/, '')
+
 const EMPTY_FILTERS = {
   sn: '',
   line: '',
@@ -196,6 +201,7 @@ export default function FixtureListPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [view, setView] = useState('fixture')
+  const [expandedRowId, setExpandedRowId] = useState('')
   const [query, setQuery] = useState('')
   const [filters, setFilters] = useState(EMPTY_FILTERS)
   const [appliedFilters, setAppliedFilters] = useState(EMPTY_FILTERS)
@@ -397,6 +403,7 @@ export default function FixtureListPage() {
       const includeAll = !needle || lineHit || modelHit
       const cell = new Map()
       const cellCount = new Map()
+      const cellStandard = new Map()
 
       for (const info of doc.fixtureInfo || []) {
         const raw = String(info.position || '').trim()
@@ -414,6 +421,7 @@ export default function FixtureListPage() {
         /* จำนวนที่ใช้จริงต่อ fixture base (ค่ามาตรฐานจาก Excel) */
         const standard = Number(info.count) || 0
         if (standard > (standardBy.get(key) || 0)) standardBy.set(key, standard)
+        if (standard > (cellStandard.get(key) || 0)) cellStandard.set(key, standard)
 
         for (const sn of info.sn || []) {
           if (!sn) continue
@@ -425,8 +433,8 @@ export default function FixtureListPage() {
         }
       }
 
-      if (cell.size) {
-        rows.push({ id: String(doc._id), line: doc.line, model: doc.model, cell, cellCount })
+      if (cell.size || cellStandard.size) {
+        rows.push({ id: String(doc._id), line: doc.line, model: doc.model, cell, cellCount, cellStandard })
       }
     }
 
@@ -438,6 +446,48 @@ export default function FixtureListPage() {
 
     return { rows, positions: [...POSITION_ORDER, ...extras], processBy, countBy, standardBy }
   }, [docs, appliedFilters.line, appliedFilters.model, needle, snNeedle, t])
+
+  const expandedDetail = useMemo(() => {
+    const row = matrix.rows.find((item) => item.id === expandedRowId)
+    if (!row) return null
+
+    const serialsByBase = new Map()
+    for (const fixture of allFixtures) {
+      if (String(fixture.line || '') !== String(row.line || '')) continue
+      if (String(fixture.model || '') !== String(row.model || '')) continue
+      const base = baseOf(fixture.fixtureBase || fixture.sn)
+      if (!base) continue
+      if (!serialsByBase.has(base)) serialsByBase.set(base, new Set())
+      serialsByBase.get(base).add(fixture.sn)
+    }
+
+    const groups = []
+    for (const position of matrix.positions) {
+      const sns = row.cell.get(position) || []
+      const standard = row.cellStandard?.get(position) || 0
+      const actual = row.cellCount?.get(position) || sns.length
+      if (!sns.length && !standard && !actual) continue
+
+      const bases = new Map()
+      for (const sn of sns) {
+        const base = baseOf(sn)
+        if (!base) continue
+        if (!bases.has(base)) bases.set(base, new Set())
+        const registered = serialsByBase.get(base)
+        if (registered?.size) registered.forEach((serial) => bases.get(base).add(serial))
+        else bases.get(base).add(sn)
+      }
+
+      groups.push({
+        position,
+        standard,
+        actual,
+        bases: [...bases].map(([base, serials]) => ({ base, serials: [...serials] })),
+      })
+    }
+
+    return { row, groups }
+  }, [expandedRowId, matrix, allFixtures])
 
   const statusValues = valuesFor(detailOptions, 'statuses').length
     ? valuesFor(detailOptions, 'statuses')
@@ -688,10 +738,10 @@ export default function FixtureListPage() {
             <table className="border-collapse text-left text-[11px]">
               <thead>
                 <tr className="bg-slate-50">
-                  <th className="sticky left-0 top-0 z-30 min-w-[60px] border-b border-r border-slate-200 bg-slate-50 px-2 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-slate-500">
+                  <th className="sticky left-0 top-0 z-30 min-w-[78px] border-b border-r border-slate-200 bg-slate-50 px-2 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-slate-500">
                     {t('Line', 'Line')}
                   </th>
-                  <th className="sticky left-[60px] top-0 z-30 min-w-[120px] border-b border-r border-slate-200 bg-slate-50 px-2 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-slate-500">
+                  <th className="sticky left-[78px] top-0 z-30 min-w-[120px] border-b border-r border-slate-200 bg-slate-50 px-2 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-slate-500">
                     {t('Model', 'Model')}
                   </th>
                   {matrix.positions.map((position) => (
@@ -702,32 +752,130 @@ export default function FixtureListPage() {
                 </tr>
               </thead>
               <tbody>
-                {matrix.rows.map((row) => (
-                  <tr key={row.id} className="border-b border-slate-100 hover:bg-blue-50/40">
-                    <td className="sticky left-0 z-10 min-w-[60px] border-r border-slate-100 bg-white px-2 py-1.5 text-[11px] font-bold text-slate-700">
-                      {row.line || '-'}
-                    </td>
-                    <td className="sticky left-[60px] z-10 min-w-[120px] border-r border-slate-100 bg-white px-2 py-1.5 font-mono text-[10px] font-semibold text-slate-600">
-                      {row.model || '-'}
-                    </td>
-                    {matrix.positions.map((position) => {
-                      const sns = row.cell.get(position) || []
-                      const cnt = row.cellCount?.get(position) || sns.length
-                      if (sns.length === 0 && !cnt) return (
-                        <td key={position} className="border-r border-slate-100 px-0 py-1 text-center text-[9px] text-slate-300">
-                          -
-                        </td>
-                      )
-                      return (
-                        <td key={position} className="border-r border-slate-100 px-0 py-1 text-center" title={sns.length ? sns.join('\n') : (cnt ? cnt + ' ตัว' : '')}>
-                          <span className="inline-flex h-4 min-w-[18px] items-center justify-center rounded bg-blue-100 px-0.5 text-[9px] font-black text-blue-700">
-                            {cnt || sns.length}
+                {matrix.rows.map((row) => {
+                  const isOpen = expandedRowId === row.id
+                  const detail = isOpen ? expandedDetail : null
+                  return (
+                    <Fragment key={row.id}>
+                      <tr
+                        onClick={() => setExpandedRowId((current) => (current === row.id ? '' : row.id))}
+                        className={cn(
+                          'cursor-pointer border-b border-slate-100 transition-colors',
+                          isOpen ? 'bg-blue-50/70' : 'hover:bg-blue-50/40',
+                        )}
+                        title={t('คลิกเพื่อดู Fixture Base ในรายการ', 'Click to see fixture bases in this row')}
+                      >
+                        <td className="sticky left-0 z-10 min-w-[78px] border-r border-slate-100 bg-white px-2 py-1.5 text-[11px] font-bold text-slate-700">
+                          <span className="flex items-center gap-1">
+                            <ChevronDown
+                              className={cn(
+                                'h-3 w-3 shrink-0 text-slate-400 transition-transform',
+                                isOpen && 'rotate-180',
+                              )}
+                            />
+                            <span className="truncate">{row.line || '-'}</span>
                           </span>
                         </td>
-                      )
-                    })}
-                  </tr>
-                ))}
+                        <td className="sticky left-[78px] z-10 min-w-[120px] border-r border-slate-100 bg-white px-2 py-1.5 font-mono text-[10px] font-semibold text-slate-600">
+                          {row.model || '-'}
+                        </td>
+                        {matrix.positions.map((position) => {
+                          const sns = row.cell.get(position) || []
+                          const actual = row.cellCount?.get(position) || sns.length
+                          const standard = row.cellStandard?.get(position) || 0
+                          if (!sns.length && !actual && !standard) return (
+                            <td key={position} className="border-r border-slate-100 px-0 py-1 text-center text-[9px] text-slate-300">
+                              -
+                            </td>
+                          )
+                          const shown = standard || actual
+                          const tooltip = standard
+                            ? `${t('ตาม Excel', 'Excel count')}: ${standard} · ${t('มีจริง', 'Actual')}: ${actual}${sns.length ? `\n${sns.join('\n')}` : ''}`
+                            : sns.length
+                              ? sns.join('\n')
+                              : `${actual} ${t('ตัว', 'pcs')}`
+                          return (
+                            <td key={position} className="border-r border-slate-100 px-0 py-1 text-center" title={tooltip}>
+                              <span
+                                className={`inline-flex h-4 min-w-[18px] items-center justify-center rounded px-0.5 text-[9px] font-black ${
+                                  standard ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'
+                                }`}
+                              >
+                                {shown}
+                              </span>
+                            </td>
+                          )
+                        })}
+                      </tr>
+                      {detail ? (
+                        <tr className="animate-slide-down border-b border-blue-100 bg-blue-50/60">
+                          <td colSpan={matrix.positions.length + 2} className="p-2">
+                            <div className="rounded-lg border border-blue-100 bg-white/70 p-2.5">
+                              <div className="mb-2 flex flex-wrap items-center justify-between gap-2 border-b border-blue-100 pb-1.5">
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <span className="font-mono text-[11px] font-black text-blue-800">
+                                    {detail.row.line || '-'}
+                                  </span>
+                                  <span className="text-blue-300">/</span>
+                                  <span className="truncate font-mono text-[10px] font-bold text-slate-600">
+                                    {detail.row.model || '-'}
+                                  </span>
+                                  <span className="rounded bg-white px-1.5 py-0.5 text-[9px] font-bold text-blue-600 ring-1 ring-inset ring-blue-100">
+                                    {t('Fixture Base ในจำนวนนี้', 'Fixture bases in this count')}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedRowId('')}
+                                  className="rounded px-1.5 py-0.5 text-[9px] font-bold text-slate-500 hover:bg-white hover:text-slate-800"
+                                >
+                                  {t('ปิด', 'Close')}
+                                </button>
+                              </div>
+                              {detail.groups.length === 0 ? (
+                                <p className="py-1.5 text-center text-[10px] font-semibold text-slate-400">
+                                  {t('ไม่มี Fixture Base ในแถวนี้', 'No fixture bases in this row')}
+                                </p>
+                              ) : (
+                                <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                                  {detail.groups.map((group) => (
+                                    <div key={group.position} className="min-w-0 rounded-lg border border-blue-100 bg-white p-2">
+                                      <div className="flex items-start justify-between gap-2">
+                                        <p className="min-w-0 truncate text-[9px] font-black text-slate-700" title={group.position}>
+                                          {group.position}
+                                        </p>
+                                        <span className="shrink-0 rounded bg-blue-50 px-1 py-0.5 font-mono text-[9px] font-black text-blue-700">
+                                          {group.standard || group.actual}
+                                        </span>
+                                      </div>
+                                      <p className="mt-0.5 text-[8px] font-semibold text-slate-400">
+                                        {t('ตาม Excel', 'Excel')}: {group.standard || 0} · {t('มีจริง', 'Actual')}: {group.actual}
+                                      </p>
+                                      <div className="mt-1 flex flex-wrap gap-1">
+                                        {group.bases.length === 0 ? (
+                                          <span className="text-[8px] font-semibold text-slate-300">-</span>
+                                        ) : group.bases.map(({ base, serials }) => (
+                                          <span
+                                            key={base}
+                                            className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[8px] font-bold text-slate-700"
+                                            title={serials.join('\n')}
+                                          >
+                                            {base}
+                                            {serials.length > 1 ? ` (${serials.length})` : ''}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  )
+                })}
               </tbody>
             </table>
             {matrix.rows.length === 0 ? (

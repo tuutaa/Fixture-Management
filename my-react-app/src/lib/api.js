@@ -183,8 +183,15 @@ export const api = {
       method: 'PUT',
       body: { action, sn, user },
     }),
-  verifyRequest: (requestId, user) =>
-    request(`/requests/${encodeURIComponent(requestId)}/verify`, { method: 'PUT', body: { user } }),
+  verifyRequest: (requestId, user, options = {}) =>
+    request(`/requests/${encodeURIComponent(requestId)}/verify`, {
+      method: 'PUT',
+      body: {
+        user,
+        ...(options.maintenance ? { maintenance: true } : {}),
+        ...(options.finalApproval ? { finalApproval: true } : {}),
+      },
+    }),
   deleteRequest: (requestId) =>
     request(`/requests/${encodeURIComponent(requestId)}`, { method: 'DELETE' }),
 
@@ -215,23 +222,15 @@ export const api = {
     }
     return payload
   },
-  pmUploadGroup: async (line, model, file, days, user) => {
+  pmUploadGroup: async (line, model, docNo, days, user) => {
     if (IS_MOCK) {
       const { mockPmUploadGroup } = await import('./mockApi.js')
-      return mockPmUploadGroup(line, model, file, days, user)
+      return mockPmUploadGroup(line, model, docNo, days, user)
     }
-    const form = new FormData()
-    form.append('line', line)
-    form.append('model', model)
-    form.append('days', String(days))
-    if (user) form.append('user', JSON.stringify(user))
-    form.append('file', file)
-    const response = await fetch(`${API_BASE}/pm/forms/group`, { method: 'POST', body: form })
-    const payload = await response.json().catch(() => null)
-    if (!response.ok) {
-      throw new ApiError(payload?.message || `Upload failed (${response.status})`, response.status, payload)
-    }
-    return payload
+    return request('/pm/forms/group', {
+      method: 'POST',
+      body: { line, model, docNo, days, user },
+    })
   },
 
   /* PM & Maintenance -> Verify + Record */

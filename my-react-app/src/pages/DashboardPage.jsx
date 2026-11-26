@@ -1,16 +1,17 @@
 /*
  * Direction contract — Light analytics control center
- * THESIS: a read-only factory operations canvas where the state of every line is
- * legible in one glance; no action controls live inside dashboard content.
- * OWN-WORLD: white/slate glass panels, one indigo signal accent, semantic
- * emerald/amber/rose status color, SVG area/donut/bar graphics, tabular numerals.
+ * THESIS: a read-only factory operations canvas where the whole state of the
+ * factory is legible in a single viewport; no action controls live in the
+ * dashboard content.
+ * OWN-WORLD: white/slate panels, one indigo signal accent, semantic
+ * emerald/amber/rose status color, compact bar graphics, tabular numerals.
  * STORY: total fleet → live utilization → pressure points → ranked breakdown
  * hotspots → the requests behind the numbers.
- * FIRST VIEWPORT: slim header band, six KPI tiles, then a 7-day request trend
- * beside the fixture-health donut and line-utilization bars.
+ * FIRST VIEWPORT: slim header band, eight KPI tiles, then four compact panels
+ * covering line utilization, request flow, priority radar and process/latest.
  * FORM: pinned user direction — analytics control center; seed-key: pinned-light-analytics.
- * FINISH: verified in the browser — read-only main (0 clickables), all six panels
- * present, no console errors; chart data comes only from /api/dashboard.
+ * FINISH: read-only main, all summary panels visible without page scrolling;
+ * chart data comes only from /api/dashboard.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
@@ -23,7 +24,6 @@ import {
   Gauge,
   Layers3,
   PackageSearch,
-  Radio,
   Sparkles,
   TrendingUp,
   Wrench,
@@ -104,127 +104,11 @@ const modelLabel = (request) => {
 }
 
 const EmptyLine = ({ children }) => (
-  <p className="px-1 py-6 text-center text-[11px] font-semibold text-slate-400">{children}</p>
+  <p className="px-1 py-3 text-center text-[10px] font-semibold text-slate-400">{children}</p>
 )
 
-/* --------------------------- SVG chart atoms ---------------------------- */
-
-const AreaChart = ({ series }) => {
-  const width = 680
-  const height = 176
-  const padX = 30
-  const padY = 18
-  const values = series.map((point) => num(point.count))
-  const max = Math.max(4, ...values)
-  const stepX = series.length > 1 ? (width - padX * 2) / (series.length - 1) : 0
-  const points = values.map((value, index) => ({
-    x: padX + index * stepX,
-    y: height - padY - (value / max) * (height - padY * 2),
-  }))
-  const path = points.map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' ')
-  const baseY = height - padY
-  const area = points.length
-    ? `${path} L ${points[points.length - 1].x} ${baseY} L ${points[0].x} ${baseY} Z`
-    : ''
-  const last = points[points.length - 1]
-  const gridLines = [0, 1, 2, 3]
-
-  return (
-    <div className="relative">
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        preserveAspectRatio="none"
-        className="h-[176px] w-full overflow-visible"
-        role="img"
-        aria-label="7-day request trend"
-      >
-        <defs>
-          <linearGradient id="dash-area" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={COLORS.indigo} stopOpacity="0.28" />
-            <stop offset="100%" stopColor={COLORS.indigo} stopOpacity="0" />
-          </linearGradient>
-          <linearGradient id="dash-line" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor={COLORS.blue} />
-            <stop offset="100%" stopColor={COLORS.indigo} />
-          </linearGradient>
-        </defs>
-        {gridLines.map((index) => {
-          const y = padY + (index * (height - padY * 2)) / 3
-          const label = Math.round(max * (1 - index / 3))
-          return (
-            <g key={index}>
-              <line x1={padX} y1={y} x2={width - padX} y2={y} stroke="#e2e8f0" strokeDasharray="3 5" />
-              <text x={4} y={y + 4} fontSize="10" fill="#94a3b8" fontWeight="700">{label}</text>
-            </g>
-          )
-        })}
-        {area ? <path d={area} fill="url(#dash-area)" /> : null}
-        {path ? <path d={path} fill="none" stroke="url(#dash-line)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /> : null}
-        {points.map((point, index) => (
-          <circle key={series[index]?.date || index} cx={point.x} cy={point.y} r={index === points.length - 1 ? 5 : 3} fill="#fff" stroke={COLORS.indigo} strokeWidth={index === points.length - 1 ? 3 : 2} />
-        ))}
-        {last ? <circle cx={last.x} cy={last.y} r="10" fill={COLORS.indigo} opacity="0.12" /> : null}
-      </svg>
-      <div className="grid grid-cols-7 px-2 text-center text-[9px] font-bold text-slate-400">
-        {series.map((point) => <span key={point.date}>{point.label}</span>)}
-      </div>
-    </div>
-  )
-}
-
-const DonutChart = ({ segments, centerValue, centerLabel }) => {
-  const radius = 52
-  const circumference = 2 * Math.PI * radius
-  const total = segments.reduce((sum, segment) => sum + Math.max(0, num(segment.value)), 0)
-  let offset = 0
-
-  return (
-    <div className="flex items-center gap-5">
-      <div className="relative h-[132px] w-[132px] shrink-0">
-        <svg viewBox="0 0 132 132" className="h-full w-full -rotate-90" role="img" aria-label="Fixture status mix">
-          <circle cx="66" cy="66" r={radius} fill="none" stroke="#f1f5f9" strokeWidth="15" />
-          {total > 0 ? segments.map((segment) => {
-            const value = Math.max(0, num(segment.value))
-            if (!value) return null
-            const length = (value / total) * circumference
-            const circle = (
-              <circle
-                key={segment.label}
-                cx="66"
-                cy="66"
-                r={radius}
-                fill="none"
-                stroke={segment.color}
-                strokeWidth="15"
-                strokeDasharray={`${Math.max(length - 2, 0)} ${circumference}`}
-                strokeDashoffset={-offset}
-                strokeLinecap="round"
-              />
-            )
-            offset += length
-            return circle
-          }) : null}
-        </svg>
-        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-2xl font-black tracking-tight text-slate-900">{centerValue}</span>
-          <span className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">{centerLabel}</span>
-        </div>
-      </div>
-      <div className="min-w-0 flex-1 space-y-2">
-        {segments.map((segment) => (
-          <div key={segment.label} className="flex items-center gap-2 text-[11px]">
-            <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: segment.color }} />
-            <span className="min-w-0 flex-1 truncate font-semibold text-slate-500">{segment.label}</span>
-            <span className="font-mono font-black tabular-nums text-slate-800">{num(segment.value)}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 const StackedBar = ({ parts = [], scale = 100 }) => (
-  <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
+  <div className="flex h-2 w-full overflow-hidden rounded-full bg-slate-100">
     {parts.map((part, index) => (
       <span
         key={`${part.key || index}`}
@@ -235,53 +119,53 @@ const StackedBar = ({ parts = [], scale = 100 }) => (
   </div>
 )
 
-const KpiCard = ({ label, value, hint, icon: Icon, color, meter = 0, foot }) => (
-  <div className="group relative min-w-0 overflow-hidden rounded-3xl border border-slate-200/80 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,0.03),0_16px_32px_-24px_rgba(15,23,42,0.35)]">
+const CompactKpi = ({ label, value, hint, icon: Icon, color, meter = 0 }) => (
+  <div className="group relative min-w-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(15,23,42,0.03),0_12px_24px_-20px_rgba(15,23,42,0.35)]">
     <div
-      className="pointer-events-none absolute -right-10 -top-12 h-28 w-28 rounded-full opacity-[0.09] blur-xl transition-transform duration-500 group-hover:scale-125"
+      className="pointer-events-none absolute -right-6 -top-8 h-20 w-20 rounded-full opacity-[0.08] blur-xl transition-transform duration-500 group-hover:scale-125"
       style={{ backgroundColor: color }}
     />
-    <div className="flex items-start justify-between gap-2">
-      <p className="min-w-0 truncate text-[9px] font-black uppercase tracking-[0.16em] text-slate-400">{label}</p>
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: `${color}18`, color }}>
-        <Icon className="h-4 w-4" strokeWidth={2.2} />
+    <div className="flex items-start justify-between gap-1">
+      <p className="min-w-0 truncate text-[8px] font-black uppercase tracking-[0.13em] text-slate-400">{label}</p>
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: `${color}18`, color }}>
+        <Icon className="h-3.5 w-3.5" strokeWidth={2.2} />
       </span>
     </div>
-    <p className="mt-2 text-[28px] font-black leading-none tracking-tight text-slate-900">
+    <p className="mt-1 text-[21px] font-black leading-none tracking-tight text-slate-900">
       {value.toLocaleString()}
     </p>
-    <p className="mt-1.5 truncate text-[10px] font-semibold text-slate-400">{hint}</p>
-    <div className="mt-3 h-1 overflow-hidden rounded-full bg-slate-100">
+    <p className="mt-1 truncate text-[9px] font-semibold text-slate-400">{hint}</p>
+    <div className="mt-1.5 h-0.5 overflow-hidden rounded-full bg-slate-100">
       <div
         className="h-full rounded-full transition-all"
         style={{ width: `${Math.min(100, Math.max(0, meter))}%`, backgroundColor: color }}
       />
     </div>
-    {foot ? <p className="mt-1.5 truncate text-[9px] font-bold" style={{ color }}>{foot}</p> : null}
   </div>
 )
 
-const Panel = ({ eyebrow, title, icon: Icon, children, className }) => (
-  <Card className={cn('min-w-0 rounded-3xl border-slate-200/80 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,0.03),0_18px_36px_-28px_rgba(15,23,42,0.4)] sm:p-5', className)}>
-    <div className="mb-4 flex items-start gap-3">
+const MiniPanel = ({ eyebrow, title, icon: Icon, children, className, action }) => (
+  <Card className={cn('flex min-h-0 min-w-0 flex-col rounded-2xl border-slate-200/80 bg-white p-3 shadow-[0_1px_2px_rgba(15,23,42,0.03),0_12px_28px_-24px_rgba(15,23,42,0.4)]', className)}>
+    <div className="mb-2 flex shrink-0 items-center gap-2">
       {Icon ? (
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">
-          <Icon className="h-4 w-4" strokeWidth={2.2} />
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600">
+          <Icon className="h-3.5 w-3.5" strokeWidth={2.2} />
         </span>
       ) : null}
-      <div className="min-w-0">
-        {eyebrow ? <p className="text-[9px] font-black uppercase tracking-[0.16em] text-indigo-500">{eyebrow}</p> : null}
-        <h2 className="truncate text-[13px] font-black text-slate-900">{title}</h2>
+      <div className="min-w-0 flex-1">
+        {eyebrow ? <p className="text-[8px] font-black uppercase tracking-[0.14em] text-indigo-500">{eyebrow}</p> : null}
+        <h2 className="truncate text-[11px] font-black text-slate-900">{title}</h2>
       </div>
+      {action}
     </div>
-    {children}
+    <div className="min-h-0 flex-1">{children}</div>
   </Card>
 )
 
 /* --------------------------------- Page -------------------------------- */
 
 export default function DashboardPage() {
-  const { t, fixtureStatus, pmState, requestStatus, requestType } = useLabels()
+  const { t, ui, fixtureStatus, pmState, requestStatus, requestType } = useLabels()
   const sm = useServerMessage()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -318,6 +202,8 @@ export default function DashboardPage() {
     const pmOverdue = (data?.pmAlerts || []).filter((fixture) =>
       num(fixture.pmOverdueDays) > 0 || (fixture.pmStates || []).some((state) => PM_OVERDUE_STATES.has(state)),
     ).length
+    const expiringSoon = num(data?.expiryStats?.expiringIn3Days)
+    const expired = num(data?.expiryStats?.expired)
     const inUse = num(counts['In Use'])
 
     return {
@@ -330,6 +216,8 @@ export default function DashboardPage() {
       requestTotal,
       activeRequests,
       pmOverdue,
+      expiringSoon,
+      expired,
       inUse,
       stock: num(counts['In Stock']),
       maintenance: num(counts.Maintenance),
@@ -357,7 +245,6 @@ export default function DashboardPage() {
         subtitle: [requestType(item.type), item.currentModel, item.line].filter(Boolean).join(' · '),
         relative: relativeDays(item.daysLeft),
         urgency: Number.isFinite(item.daysLeft) ? item.daysLeft : 999,
-        tone: 'indigo',
       }))
 
     const pm = (data?.pmAlerts || [])
@@ -371,7 +258,6 @@ export default function DashboardPage() {
           ? t(`เกิน ${item.pmOverdueDays} วัน`, `${item.pmOverdueDays} days overdue`)
           : pmState(item.pmStates?.[0]),
         urgency: -num(item.pmOverdueDays) - 1,
-        tone: 'rose',
       }))
 
     return [...requests, ...pm].sort((a, b) => a.urgency - b.urgency).slice(0, 8)
@@ -387,7 +273,10 @@ export default function DashboardPage() {
   const recentRequests = data.recentRequests || []
   const activeByProcess = data.activeByProcess || {}
   const maxLineTotal = Math.max(1, ...lineStats.map((row) => num(row.total)))
+  const maxProcessCount = Math.max(1, ...summary.processRows.map(([, count]) => count))
+  const maxRequestCount = Math.max(1, ...summary.requestRows.map(([, count]) => count))
   const maxTopScore = Math.max(1, ...topBreakdown.map((row) => num(row.total)))
+  const trendTotal = trend.reduce((sum, row) => sum + num(row.count), 0)
 
   const healthSegments = [
     { label: fixtureStatus('In Stock'), value: summary.stock, color: COLORS.emerald },
@@ -396,89 +285,152 @@ export default function DashboardPage() {
     { label: t('Order / NG', 'Order / NG'), value: summary.ng, color: COLORS.rose },
   ]
 
-  const maxRequestCount = Math.max(1, ...summary.requestRows.map(([, count]) => count))
-  const maxProcessCount = Math.max(1, ...summary.processRows.map(([, count]) => count))
+  const kpis = [
+    {
+      label: t('Fixture ทั้งหมด', 'Total fixtures'),
+      value: summary.total,
+      hint: t('ทุก Line', 'All lines'),
+      icon: Boxes,
+      color: COLORS.indigo,
+      meter: 100,
+    },
+    {
+      label: t('ใช้งานที่ไลน์', 'In use'),
+      value: summary.inUse,
+      hint: `${summary.utilPercent}% ${t('ของทั้งหมด', 'of fleet')}`,
+      icon: Activity,
+      color: COLORS.blue,
+      meter: summary.utilPercent,
+    },
+    {
+      label: t('พร้อมเบิกจ่าย', 'Ready in stock'),
+      value: summary.stock,
+      hint: fixtureStatus('In Stock'),
+      icon: PackageSearch,
+      color: COLORS.emerald,
+      meter: summary.total ? (summary.stock / summary.total) * 100 : 0,
+    },
+    {
+      label: t('ซ่อมบำรุง', 'Maintenance'),
+      value: summary.maintenance,
+      hint: t('อยู่ในคิวซ่อม', 'In repair queue'),
+      icon: Wrench,
+      color: COLORS.amber,
+      meter: summary.total ? (summary.maintenance / summary.total) * 100 : 0,
+    },
+    {
+      label: t('คำขอค้าง', 'Active requests'),
+      value: summary.activeRequests,
+      hint: `${summary.requestTotal} ${t('คำขอทั้งหมด', 'total requests')}`,
+      icon: ClipboardList,
+      color: COLORS.violet,
+      meter: summary.requestTotal ? (summary.activeRequests / summary.requestTotal) * 100 : 0,
+    },
+    {
+      label: t('PM เกินกำหนด', 'PM overdue'),
+      value: summary.pmOverdue,
+      hint: t('เกิน 3 วันต้องมี 4M', '4M required after 3 days'),
+      icon: AlertTriangle,
+      color: COLORS.rose,
+      meter: Math.min(100, summary.pmOverdue * 8),
+    },
+    {
+      label: t('หมดอายุใน 3 วัน', 'Expired in 3 day'),
+      value: summary.expiringSoon,
+      hint: t('จะหมดอายุภายใน 3 วัน', 'Expiring within 3 days'),
+      icon: CalendarClock,
+      color: COLORS.amber,
+      meter: Math.min(100, summary.expiringSoon * 8),
+    },
+    {
+      label: t('หมดอายุแล้ว', 'Expired'),
+      value: summary.expired,
+      hint: t('หมดอายุแล้ว', 'Already expired'),
+      icon: AlertTriangle,
+      color: COLORS.rose,
+      meter: Math.min(100, summary.expired * 8),
+    },
+  ]
 
   return (
-    <div className="space-y-4">
-      {/* Header band — deliberately read-only. */}
-      <div className="relative overflow-hidden rounded-3xl border border-slate-200/80 bg-white px-5 py-5 shadow-[0_1px_2px_rgba(15,23,42,0.03),0_20px_45px_-32px_rgba(15,23,42,0.45)] sm:px-7">
-        <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-violet-500" />
-        <div className="absolute -right-16 -top-20 h-52 w-52 rounded-full bg-indigo-100/50 blur-2xl" />
-        <div className="relative flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <p className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-[0.2em] text-indigo-600">
-              <Sparkles className="h-3.5 w-3.5" /> Fixture Intelligence
+    <div className="-mb-16 -mt-6 flex h-[calc(100vh-65px)] flex-col gap-2 overflow-hidden lg:-mt-8 lg:h-screen">
+      {/* Slim header band — deliberately read-only. */}
+      <div className="relative shrink-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white px-4 py-2.5 shadow-[0_1px_2px_rgba(15,23,42,0.03),0_12px_28px_-24px_rgba(15,23,42,0.4)] sm:px-5">
+        <div className="absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r from-blue-500 via-indigo-500 to-violet-500" />
+        <div className="absolute -right-10 -top-16 h-36 w-36 rounded-full bg-indigo-100/50 blur-2xl" />
+        <div className="relative flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="flex items-center gap-1 text-[9px] font-black uppercase tracking-[0.18em] text-indigo-600">
+              <Sparkles className="h-3 w-3" /> {ui('fixtureIntelligence')}
             </p>
-            <h1 className="mt-1.5 text-[26px] font-black tracking-tight text-slate-900 sm:text-[30px]">
-              {t('ภาพรวมการดำเนินงาน', 'Operations Overview')}
-            </h1>
-            <p className="mt-1 text-[12px] font-medium text-slate-500">
-              {t('สถานะ Fixture, คำขอ และจุดที่ต้องโฟกัสแบบเรียลไทม์', 'Live fixture state, request flow, and the hotspots that need attention')}
-            </p>
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              <h1 className="truncate text-[19px] font-black tracking-tight text-slate-900 sm:text-[22px]">
+                {t('ภาพรวมการดำเนินงาน', 'Operations Overview')}
+              </h1>
+              <p className="hidden truncate text-[10px] font-medium text-slate-500 md:block">
+                {t('สถานะ Fixture, คำขอ และจุดที่ต้องโฟกัสแบบเรียลไทม์', 'Live fixture state, request flow, and the hotspots that need attention')}
+              </p>
+            </div>
           </div>
-          <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-3.5 py-2">
-            <span className="relative flex h-2.5 w-2.5">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
-              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
-            </span>
-            <div>
-              <p className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">Live snapshot</p>
-              <p className="font-mono text-[11px] font-bold text-slate-700">{formatDate(new Date())}</p>
+          <div className="flex items-center gap-3">
+            <div className="hidden w-[220px] shrink-0 sm:block">
+              <div className="flex h-2 overflow-hidden rounded-full bg-slate-100">
+                {healthSegments.map((segment) => (
+                  <span
+                    key={segment.label}
+                    className="h-full"
+                    style={{
+                      width: `${summary.total ? (num(segment.value) / summary.total) * 100 : 0}%`,
+                      backgroundColor: segment.color,
+                    }}
+                    title={`${segment.label}: ${num(segment.value)}`}
+                  />
+                ))}
+              </div>
+              <div className="mt-1 flex justify-between gap-1 text-[8px] font-bold text-slate-400">
+                <span>{ui('inUseShort')} {summary.inUse}</span>
+                <span>{ui('stockShort')} {summary.stock}</span>
+                <span>{ui('pmShort')} {summary.maintenance}</span>
+                <span>{ui('ngShort')} {summary.ng}</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50/80 px-2.5 py-1.5">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+              </span>
+              <div>
+                <p className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">{ui('liveSnapshot')}</p>
+                <p className="font-mono text-[10px] font-bold text-slate-700">{formatDate(new Date())}</p>
+              </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* KPI strip */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <KpiCard label={t('Fixture ทั้งหมด', 'Total fixtures')} value={summary.total} hint={t('ทุก Line', 'All lines')} icon={Boxes} color={COLORS.indigo} meter={100} />
-        <KpiCard label={t('ใช้งานที่ไลน์', 'In use')} value={summary.inUse} hint={`${summary.utilPercent}% ${t('ของทั้งหมด', 'of fleet')}`} icon={Activity} color={COLORS.blue} meter={summary.utilPercent} foot={t(' utilization', ' utilization')} />
-        <KpiCard label={t('พร้อมเบิกจ่าย', 'Ready in stock')} value={summary.stock} hint={fixtureStatus('In Stock')} icon={PackageSearch} color={COLORS.emerald} meter={summary.total ? (summary.stock / summary.total) * 100 : 0} />
-        <KpiCard label={t('ซ่อมบำรุง', 'Maintenance')} value={summary.maintenance} hint={t('อยู่ในคิวซ่อม', 'In repair queue')} icon={Wrench} color={COLORS.amber} meter={summary.total ? (summary.maintenance / summary.total) * 100 : 0} />
-        <KpiCard label={t('คำขอค้าง', 'Active requests')} value={summary.activeRequests} hint={`${summary.requestTotal} ${t('คำขอทั้งหมด', 'total requests')}`} icon={ClipboardList} color={COLORS.violet} meter={summary.requestTotal ? (summary.activeRequests / summary.requestTotal) * 100 : 0} />
-        <KpiCard label={t('PM เกินกำหนด', 'PM overdue')} value={summary.pmOverdue} hint={t('เกิน 3 วันต้องมี 4M', '4M required after 3 days')} icon={AlertTriangle} color={COLORS.rose} meter={Math.min(100, summary.pmOverdue * 8)} />
+      {/* Eight KPIs in one strip — no page scroll required. */}
+      <div className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
+        {kpis.map((kpi) => <CompactKpi key={kpi.label} {...kpi} />)}
       </div>
 
-      {/* Primary charts */}
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,0.72fr)_minmax(0,0.88fr)]">
-        <Panel eyebrow="Demand signal" title={t('คำขอ 7 วันล่าสุด', 'Requests · last 7 days')} icon={TrendingUp}>
-          <AreaChart series={trend} />
-          <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3">
-            <div>
-              <p className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">{t('คำขอในช่วงนี้', 'Requests in window')}</p>
-              <p className="text-[18px] font-black text-slate-900">{trend.reduce((sum, row) => sum + num(row.count), 0)}</p>
-            </div>
-            <span className="flex items-center gap-1 rounded-xl bg-indigo-50 px-2.5 py-1.5 text-[10px] font-black text-indigo-600">
-              <ArrowUpRight className="h-3 w-3" /> {t('แนวโน้ม', 'Trend')}
-            </span>
-          </div>
-        </Panel>
-
-        <Panel eyebrow="Fleet mix" title={t('สุขภาพ Fixture', 'Fixture health')} icon={Gauge}>
-          <DonutChart
-            segments={healthSegments}
-            centerValue={summary.total}
-            centerLabel={t('ทั้งหมด', 'total')}
-          />
-        </Panel>
-
-        <Panel eyebrow="By line" title={t('การใช้ Fixture ต่อ Line', 'Line utilization')} icon={Layers3}>
-          <div className="max-h-[214px] space-y-3 overflow-y-auto pr-1">
-            {lineStats.length === 0 ? <EmptyLine>{t('ยังไม่มีข้อมูล Line', 'No line data yet')}</EmptyLine> : null}
-            {lineStats.map((row) => {
-              const total = num(row.total)
-              const other = num(row.inUse) + num(row.maintenance) + num(row.order) + num(row.pmOverdue)
-              const stock = Math.max(0, total - other)
-              return (
-                <div key={row.line} className="min-w-0">
-                  <div className="mb-1 flex items-center justify-between gap-2 text-[10px]">
-                    <span className="truncate font-mono font-black text-slate-700">{row.line}</span>
-                    <span className="shrink-0 font-mono font-bold text-slate-400">{total}</span>
-                  </div>
-                  <div className="h-2.5 overflow-hidden rounded-full bg-slate-100" style={{ width: `${(total / maxLineTotal) * 100}%` }}>
+      {/* Four summary panels share the remaining viewport height. */}
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <MiniPanel eyebrow={ui('byLine')} title={t('การใช้ Fixture ต่อ Line', 'Line utilization')} icon={Layers3}>
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+              {lineStats.length === 0 ? <EmptyLine>{t('ยังไม่มีข้อมูล Line', 'No line data yet')}</EmptyLine> : null}
+              {lineStats.map((row) => {
+                const total = num(row.total)
+                const other = num(row.inUse) + num(row.maintenance) + num(row.order) + num(row.pmOverdue)
+                const stock = Math.max(0, total - other)
+                return (
+                  <div key={row.line} className="min-w-0">
+                    <div className="mb-1 flex items-center justify-between gap-2 text-[9px]">
+                      <span className="truncate font-mono font-black text-slate-700">{row.line}</span>
+                      <span className="shrink-0 font-mono font-bold text-slate-400">{total}</span>
+                    </div>
                     <StackedBar
-                      scale={Math.max(1, total)}
+                      scale={maxLineTotal}
                       parts={[
                         { key: 'inUse', value: row.inUse, color: COLORS.blue },
                         { key: 'stock', value: stock, color: '#cbd5e1' },
@@ -488,210 +440,186 @@ export default function DashboardPage() {
                       ]}
                     />
                   </div>
-                </div>
-              )
-            })}
+                )
+              })}
+            </div>
+            <div className="mt-2 flex shrink-0 flex-wrap gap-x-2 gap-y-0.5 border-t border-slate-100 pt-1.5 text-[8px] font-bold text-slate-400">
+              <span className="flex items-center gap-1"><i className="h-1.5 w-1.5 rounded-full bg-blue-500" />{ui('inUseShort')}</span>
+              <span className="flex items-center gap-1"><i className="h-1.5 w-1.5 rounded-full bg-slate-300" />{ui('stockShort')}</span>
+              <span className="flex items-center gap-1"><i className="h-1.5 w-1.5 rounded-full bg-amber-500" />{ui('maintShort')}</span>
+              <span className="flex items-center gap-1"><i className="h-1.5 w-1.5 rounded-full bg-violet-500" />{ui('ngShort')}</span>
+              <span className="flex items-center gap-1"><i className="h-1.5 w-1.5 rounded-full bg-rose-500" />{ui('pmShort')}</span>
+            </div>
           </div>
-          <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 border-t border-slate-100 pt-3 text-[9px] font-bold text-slate-400">
-            <span className="flex items-center gap-1"><i className="h-1.5 w-1.5 rounded-full bg-blue-500" />In Use</span>
-            <span className="flex items-center gap-1"><i className="h-1.5 w-1.5 rounded-full bg-slate-300" />In Stock</span>
-            <span className="flex items-center gap-1"><i className="h-1.5 w-1.5 rounded-full bg-amber-500" />Maint.</span>
-            <span className="flex items-center gap-1"><i className="h-1.5 w-1.5 rounded-full bg-violet-500" />NG</span>
-            <span className="flex items-center gap-1"><i className="h-1.5 w-1.5 rounded-full bg-rose-500" />PM</span>
-          </div>
-        </Panel>
-      </div>
+        </MiniPanel>
 
-      {/* Pressure + ranked breakdown */}
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)]">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Panel eyebrow="Workflow" title={t('ความกดดันของคำขอ', 'Request pressure')} icon={Radio}>
-            <div className="space-y-2.5">
-              {summary.requestRows.map(([status, count]) => (
-                <div key={status} className="flex items-center gap-2">
-                  <span className="w-[62px] shrink-0 truncate text-[10px] font-bold text-slate-500">
-                    {requestStatus(status)}
-                  </span>
-                  <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100">
-                    <div
-                      className="h-full rounded-full"
-                      style={{ width: `${(count / maxRequestCount) * 100}%`, backgroundColor: STATUS_COLORS[status] || COLORS.slate }}
-                    />
-                  </div>
-                  <span className="w-6 shrink-0 text-right font-mono text-[10px] font-black tabular-nums text-slate-700">{count}</span>
+        <MiniPanel
+          eyebrow={ui('workflow')}
+          title={t('คำขอ / ความกดดัน', 'Requests · flow')}
+          icon={TrendingUp}
+          action={
+            <span className="flex shrink-0 items-center gap-1 rounded-lg bg-indigo-50 px-2 py-1 text-[9px] font-black text-indigo-600">
+              <ArrowUpRight className="h-3 w-3" /> {trendTotal} · {ui('last7Days')}
+            </span>
+          }
+        >
+          <div className="h-full space-y-2 overflow-y-auto pr-1">
+            <p className="text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">{ui('status')}</p>
+            {summary.requestRows.map(([status, count]) => (
+              <div key={status} className="flex items-center gap-2">
+                <span className="w-[54px] shrink-0 truncate text-[9px] font-bold text-slate-500">{requestStatus(status)}</span>
+                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
+                  <div
+                    className="h-full rounded-full"
+                    style={{ width: `${(count / maxRequestCount) * 100}%`, backgroundColor: STATUS_COLORS[status] || COLORS.slate }}
+                  />
                 </div>
-              ))}
-              {summary.requestRows.length === 0 ? <EmptyLine>{t('ยังไม่มีคำขอ', 'No requests yet')}</EmptyLine> : null}
-            </div>
-          </Panel>
-
-          <Panel eyebrow="Mix" title={t('ประเภทคำขอ / Process', 'Request & process mix')} icon={ClipboardList}>
-            <p className="mb-1.5 text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">{t('ประเภท', 'Types')}</p>
-            <div className="flex flex-wrap gap-1.5">
-              {summary.requestTypeRows.length === 0 ? <EmptyLine>{t('ยังไม่มีคำขอ', 'No requests yet')}</EmptyLine> : null}
-              {summary.requestTypeRows.map(([type, count]) => (
-                <span key={type} className="rounded-lg bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-600">
-                  {requestType(type)} <b className="font-mono text-slate-800">{count}</b>
-                </span>
-              ))}
-            </div>
-            <p className="mb-1.5 mt-4 text-[9px] font-black uppercase tracking-[0.14em] text-slate-400">Process</p>
-            <div className="space-y-2">
-              {summary.processRows.map(([process, count]) => (
-                <div key={process} className="flex items-center gap-2">
-                  <span className="w-[64px] shrink-0 truncate text-[10px] font-semibold text-slate-500">{process}</span>
-                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
-                    <div className="h-full rounded-full bg-indigo-400" style={{ width: `${(count / maxProcessCount) * 100}%` }} />
-                  </div>
-                  <span className="w-5 shrink-0 text-right font-mono text-[10px] font-bold text-slate-600">{count}</span>
-                </div>
-              ))}
-              {summary.processRows.length === 0 ? <EmptyLine>N/A</EmptyLine> : null}
-            </div>
-          </Panel>
-        </div>
-
-        <Panel eyebrow="Hotspots" title={t('Top fixture breakdown', 'Top fixture breakdown')} icon={AlertTriangle}>
-          <div className="space-y-2.5">
-            {topBreakdown.length === 0 ? (
-              <EmptyLine>{t('ไม่มี Fixture ที่ต้อง breakdown', 'No breakdown hotspots right now')}</EmptyLine>
-            ) : null}
-            {topBreakdown.map((row, index) => (
-              <div key={row.key} className="flex items-center gap-3 rounded-2xl border border-slate-100 bg-slate-50/60 px-3 py-2.5">
-                <span className={cn(
-                  'flex h-7 w-7 shrink-0 items-center justify-center rounded-xl font-mono text-[11px] font-black',
-                  index === 0
-                    ? 'border border-rose-200 bg-white text-rose-700'
-                    : index === 1
-                      ? 'border border-amber-200 bg-white text-amber-700'
-                      : 'border border-slate-200 bg-white text-slate-700',
-                )}
-                >
-                  {index + 1}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-mono text-[11px] font-black text-slate-800">{row.line}</p>
-                  <p className="truncate text-[10px] font-semibold text-slate-400">{row.model}</p>
-                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white">
-                    <StackedBar
-                      scale={maxTopScore}
-                      parts={[
-                        { key: 'maint', value: row.maintenance, color: COLORS.amber },
-                        { key: 'pm', value: row.pm, color: COLORS.rose },
-                        { key: 'ng', value: row.ng, color: COLORS.violet },
-                      ]}
-                    />
-                  </div>
-                </div>
-                <div className="shrink-0 text-right">
-                  <p className="text-[17px] font-black leading-none text-slate-900">{row.total}</p>
-                  <p className="text-[9px] font-bold text-slate-400">M {row.maintenance} · PM {row.pm} · NG {row.ng}</p>
-                </div>
+                <span className="w-5 shrink-0 text-right font-mono text-[9px] font-black tabular-nums text-slate-700">{count}</span>
               </div>
             ))}
-          </div>
-        </Panel>
-      </div>
+            {summary.requestRows.length === 0 ? <EmptyLine>{t('ยังไม่มีคำขอ', 'No requests yet')}</EmptyLine> : null}
 
-      {/* Priority radar + process load */}
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)]">
-        <Panel eyebrow="Focus" title={t('ต้องโฟกัสตอนนี้', 'Priority radar')} icon={CalendarClock}>
-          <div className="max-h-[300px] space-y-2 overflow-y-auto pr-1">
-            {attention.length === 0 ? <EmptyLine>{t('ไม่มีงานที่ต้องทำตอนนี้', 'Nothing to do right now')}</EmptyLine> : null}
-            {attention.map((item) => {
-              const Icon = item.icon
-              const urgent = item.urgency < 0
-              return (
-                <div key={item.id} className="flex items-center gap-2.5 rounded-xl border border-slate-100 bg-white px-2.5 py-2">
-                  <span className={cn(
-                    'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg',
-                    urgent ? 'bg-rose-50 text-rose-600' : 'bg-indigo-50 text-indigo-600',
-                  )}
-                  >
-                    <Icon className="h-3.5 w-3.5" strokeWidth={2.2} />
+            <div className="border-t border-slate-100 pt-2">
+              <p className="mb-1 text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">{ui('types')}</p>
+              <div className="flex flex-wrap gap-1">
+                {summary.requestTypeRows.length === 0 ? <EmptyLine>{t('ยังไม่มีคำขอ', 'No requests yet')}</EmptyLine> : null}
+                {summary.requestTypeRows.map(([type, count]) => (
+                  <span key={type} className="rounded-md bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-600">
+                    {requestType(type)} <b className="font-mono text-slate-800">{count}</b>
                   </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-mono text-[11px] font-black text-slate-800">{item.title}</p>
-                    <p className="truncate text-[10px] font-semibold text-slate-400">{item.subtitle || '-'}</p>
-                  </div>
-                  <span className={cn('shrink-0 text-[10px] font-black', urgent ? 'text-rose-600' : 'text-indigo-600')}>
-                    {item.relative}
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-        </Panel>
+                ))}
+              </div>
+            </div>
 
-        <Panel eyebrow="Active fleet" title={t('Fixture ที่ใช้งานตาม Process', 'In-use fixtures by process')} icon={Gauge}>
-          <div className="grid gap-3 sm:grid-cols-2">
-            {PROCESS_TYPES.map((process) => {
-              const count = num(activeByProcess[process.value])
-              const max = Math.max(1, ...PROCESS_TYPES.map((item) => num(activeByProcess[item.value])))
-              return (
-                <div key={process.value} className="rounded-2xl border border-slate-100 bg-slate-50/60 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="truncate text-[11px] font-black text-slate-700">{process.value}</p>
-                    <p className="font-mono text-[15px] font-black text-slate-900">{count}</p>
+            <div className="border-t border-slate-100 pt-2">
+              <p className="mb-1 text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">{ui('process')}</p>
+              <div className="space-y-1.5">
+                {summary.processRows.map(([process, count]) => (
+                  <div key={process} className="flex items-center gap-2">
+                    <span className="w-[58px] shrink-0 truncate text-[9px] font-semibold text-slate-500">{process}</span>
+                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
+                      <div className="h-full rounded-full bg-indigo-400" style={{ width: `${(count / maxProcessCount) * 100}%` }} />
+                    </div>
+                    <span className="w-5 shrink-0 text-right font-mono text-[9px] font-bold text-slate-600">{count}</span>
                   </div>
-                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white">
-                    <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-500" style={{ width: `${(count / max) * 100}%` }} />
+                ))}
+                {summary.processRows.length === 0 ? <EmptyLine>{ui('notAvailable')}</EmptyLine> : null}
+              </div>
+            </div>
+          </div>
+        </MiniPanel>
+
+        <MiniPanel eyebrow={ui('focus')} title={t('ต้องโฟกัสตอนนี้', 'Priority radar')} icon={AlertTriangle}>
+          <div className="h-full space-y-2 overflow-y-auto pr-1">
+            <div>
+              <p className="mb-1 text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">{ui('dueOverdue')}</p>
+              <div className="space-y-1">
+                {attention.length === 0 ? <EmptyLine>{t('ไม่มีงานที่ต้องทำตอนนี้', 'Nothing to do right now')}</EmptyLine> : null}
+                {attention.slice(0, 5).map((item) => {
+                  const Icon = item.icon
+                  const urgent = item.urgency < 0
+                  return (
+                    <div key={item.id} className="flex items-center gap-2 rounded-lg border border-slate-100 bg-white px-2 py-1.5">
+                      <span className={cn(
+                        'flex h-6 w-6 shrink-0 items-center justify-center rounded-md',
+                        urgent ? 'bg-rose-50 text-rose-600' : 'bg-indigo-50 text-indigo-600',
+                      )}
+                      >
+                        <Icon className="h-3 w-3" strokeWidth={2.2} />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-mono text-[10px] font-black text-slate-800">{item.title}</p>
+                        <p className="truncate text-[9px] font-semibold text-slate-400">{item.subtitle || '-'}</p>
+                      </div>
+                      <span className={cn('shrink-0 text-[9px] font-black', urgent ? 'text-rose-600' : 'text-indigo-600')}>
+                        {item.relative}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="border-t border-slate-100 pt-2">
+              <p className="mb-1 text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">{ui('topBreakdown')}</p>
+              {topBreakdown.length === 0 ? <EmptyLine>{t('ไม่มี Fixture ที่ต้อง breakdown', 'No breakdown hotspots right now')}</EmptyLine> : null}
+              <div className="space-y-1.5">
+                {topBreakdown.slice(0, 3).map((row, index) => (
+                  <div key={row.key} className="rounded-lg border border-slate-100 bg-slate-50/60 px-2 py-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="min-w-0 truncate font-mono text-[10px] font-black text-slate-700">
+                        <span className="mr-1 text-slate-400">{index + 1}.</span>{row.line}
+                      </p>
+                      <span className="shrink-0 font-mono text-[10px] font-black text-slate-900">{row.total}</span>
+                    </div>
+                    <p className="truncate text-[9px] font-semibold text-slate-400">
+                      {row.model} · M {row.maintenance} · PM {row.pm} · NG {row.ng}
+                    </p>
+                    <div className="mt-1">
+                      <StackedBar
+                        scale={maxTopScore}
+                        parts={[
+                          { key: 'maint', value: row.maintenance, color: COLORS.amber },
+                          { key: 'pm', value: row.pm, color: COLORS.rose },
+                          { key: 'ng', value: row.ng, color: COLORS.violet },
+                        ]}
+                      />
+                    </div>
                   </div>
-                </div>
-              )
-            })}
+                ))}
+              </div>
+            </div>
           </div>
-          <div className="mt-4 flex items-center gap-2 rounded-2xl bg-indigo-50/70 px-3 py-2.5 text-[10px] font-bold text-indigo-700">
-            <Boxes className="h-3.5 w-3.5 shrink-0" />
-            {t('รวม Fixture ที่ใช้งาน', 'Total in-use fixtures')}: {summary.inUse.toLocaleString()}
+        </MiniPanel>
+
+        <MiniPanel eyebrow={ui('activeFleet')} title={t('กระบวนการ & ล่าสุด', 'Process & latest')} icon={Gauge}>
+          <div className="flex h-full min-h-0 flex-col gap-2">
+            <div className="grid grid-cols-2 gap-1.5">
+              {PROCESS_TYPES.map((process) => {
+                const count = num(activeByProcess[process.value])
+                const max = Math.max(1, ...PROCESS_TYPES.map((item) => num(activeByProcess[item.value])))
+                return (
+                  <div key={process.value} className="min-w-0 rounded-lg border border-slate-100 bg-slate-50/60 p-2">
+                    <div className="flex items-center justify-between gap-1">
+                      <p className="truncate text-[9px] font-black text-slate-700">{process.value}</p>
+                      <p className="font-mono text-[11px] font-black text-slate-900">{count}</p>
+                    </div>
+                    <div className="mt-1 h-1 overflow-hidden rounded-full bg-white">
+                      <div className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-500" style={{ width: `${(count / max) * 100}%` }} />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto border-t border-slate-100 pt-2">
+              <p className="mb-1 text-[8px] font-black uppercase tracking-[0.14em] text-slate-400">{ui('latestRequests')}</p>
+              <div className="space-y-1">
+                {recentRequests.length === 0 ? <EmptyLine>{t('ยังไม่มีคำขอ', 'No requests yet')}</EmptyLine> : null}
+                {recentRequests.slice(0, 5).map((request, index) => (
+                  <div key={`${request.request_id || request._id || 'request'}-${index}`} className="flex items-center gap-2 rounded-lg border border-slate-100 bg-white px-2 py-1.5">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-mono text-[10px] font-black text-indigo-600">{request.request_id || '-'}</p>
+                      <p
+                        className="truncate text-[9px] font-semibold text-slate-400"
+                        title={[requestType(request.type), modelLabel(request), request.line, request.queueSlot ? slotLabel(request.queueSlot) : '', formatDate(request.requestInfo?.date || request.date)].filter(Boolean).join(' · ')}
+                      >
+                        {[requestType(request.type), modelLabel(request), request.line].filter(Boolean).join(' · ')}
+                      </p>
+                    </div>
+                    <RequestStatusBadge status={request.status} />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-1.5 rounded-lg bg-indigo-50/70 px-2 py-1.5 text-[9px] font-bold text-indigo-700">
+              <Boxes className="h-3 w-3 shrink-0" />
+              {t('รวม Fixture ที่ใช้งาน', 'Total in-use fixtures')}: {summary.inUse.toLocaleString()}
+            </div>
           </div>
-        </Panel>
+        </MiniPanel>
       </div>
-
-      {/* Read-only register */}
-      <Panel eyebrow="Register" title={t('คำขอและ Order ล่าสุด', 'Latest requests & orders')} icon={ClipboardList}>
-        <div className="-mx-1 overflow-x-auto">
-          <table className="w-full min-w-[860px] border-collapse text-left">
-            <thead>
-              <tr className="border-b border-slate-200 text-[9px] uppercase tracking-[0.14em] text-slate-400">
-                <th className="px-2 pb-2 font-black">{t('คำขอ', 'Request')}</th>
-                <th className="px-2 pb-2 font-black">{t('ประเภท / Process', 'Type / Process')}</th>
-                <th className="px-2 pb-2 font-black">Model</th>
-                <th className="px-2 pb-2 font-black">Line / {t('คิว', 'Queue')}</th>
-                <th className="px-2 pb-2 font-black">{t('สถานะ', 'Status')}</th>
-                <th className="px-2 pb-2 font-black">{t('วันที่', 'Date')}</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {recentRequests.map((request, index) => (
-                <tr key={`${request.request_id || request._id || 'request'}-${index}`} className="align-middle text-[11px]">
-                  <td className="px-2 py-2 font-mono font-black text-indigo-600">{request.request_id || '-'}</td>
-                  <td className="px-2 py-2 text-slate-600">
-                    <span className="block font-bold">{requestType(request.type)}</span>
-                    <span className="block text-[10px] text-slate-400">{request.requestType || '-'}</span>
-                  </td>
-                  <td className="max-w-[180px] truncate px-2 py-2 font-mono text-[10px] text-slate-500" title={modelLabel(request)}>
-                    {modelLabel(request)}
-                  </td>
-                  <td className="px-2 py-2 text-slate-500">
-                    <span className="block font-bold text-slate-600">{request.line || '-'}</span>
-                    <span className="block text-[10px] text-slate-400">
-                      {request.queueSlot ? `${slotLabel(request.queueSlot)} · ${formatDate(request.queueDate)}` : '-'}
-                    </span>
-                  </td>
-                  <td className="px-2 py-2"><RequestStatusBadge status={request.status} /></td>
-                  <td className="whitespace-nowrap px-2 py-2 font-mono text-[10px] text-slate-500">
-                    {formatDate(request.requestInfo?.date || request.date)}
-                  </td>
-                </tr>
-              ))}
-              {recentRequests.length === 0 ? (
-                <tr><td colSpan={6}><EmptyLine>{t('ยังไม่มีคำขอ', 'No requests yet')}</EmptyLine></td></tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
     </div>
   )
 }

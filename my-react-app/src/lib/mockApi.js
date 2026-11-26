@@ -34,7 +34,11 @@ const fail = (message, status = 400, payload = null) => {
   throw new MockError(message, status, payload)
 }
 
-const clone = (value) => (value === undefined ? value : JSON.parse(JSON.stringify(value)))
+const clone = (value) => {
+  if (value === undefined) return value
+  if (typeof structuredClone === 'function') return structuredClone(value)
+  return JSON.parse(JSON.stringify(value))
+}
 
 const pad = (value, size = 2) => String(value).padStart(size, '0')
 
@@ -75,6 +79,17 @@ const daysUntil = (value) => {
   return Math.round((target.getTime() - today.getTime()) / 86400000)
 }
 
+/* PM uses usage.inUseAt + 90 days. usage.exp is the fixture expiry date and is
+ * kept separate so dashboard expiry KPIs do not affect PM overdue logic. */
+const pmStartDateOf = (fixture) => text(fixture?.pmStartDate) || text(fixture?.usage?.inUseAt)
+const pmDueDateOf = (fixture) => {
+  const explicit = text(fixture?.pmDueDate)
+  if (/^\d{4}-\d{2}-\d{2}/.test(explicit)) return explicit.slice(0, 10)
+  const start = pmStartDateOf(fixture)
+  if (!/^\d{4}-\d{2}-\d{2}/.test(start)) return ''
+  return addDaysInput(start.slice(0, 10), 90)
+}
+
 const todayStamp = () => {
   const now = new Date()
   return `${String(now.getFullYear()).slice(-2)}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
@@ -90,11 +105,7 @@ const pmRunKey = (line, model, date) =>
   `PM|${text(date)}|${text(line) || 'N/A'}|${text(model) || 'N/A'}`
 
 const pmStateOf = (fixture) => {
-  const usage = fixture?.usage || {}
-  const days = daysUntil(usage.exp)
-  const max = Number(usage.max) || 0
-  const current = Number(usage.current) || 0
-  const ratio = max > 0 ? current / max : null
+  const days = daysUntil(pmDueDateOf(fixture))
   const states = []
   if (days !== null) {
     if (days > 3) states.push('tracked')
@@ -103,13 +114,12 @@ const pmStateOf = (fixture) => {
     else if (days >= -3) states.push('overdue-remind')
     else states.push('over-due')
   }
-  if (ratio !== null && ratio >= 0.8) states.push('usage-remind')
   if (states.length === 0) states.push('tracked')
   return states
 }
 
 const pmOverdueDays = (fixture) => {
-  const days = daysUntil(fixture?.usage?.exp)
+  const days = daysUntil(pmDueDateOf(fixture))
   return days === null ? 0 : Math.max(0, -days)
 }
 
@@ -126,13 +136,11 @@ const needs4MDocument = (fixture) =>
 
 const decoratePm = (fixture) => ({
   ...fixture,
+  pmStartDate: pmStartDateOf(fixture),
+  pmDueDate: pmDueDateOf(fixture),
   pmStates: pmStateOf(fixture),
   pmOverdueDays: pmOverdueDays(fixture),
   needs4M: needs4MDocument(fixture),
-  usagePercent:
-    Number(fixture?.usage?.max) > 0
-      ? Math.round(((Number(fixture?.usage?.current) || 0) / Number(fixture.usage.max)) * 100)
-      : null,
 })
 
 const sortValues = (values) =>
@@ -215,14 +223,14 @@ const syncPmStatuses = () => {
   const today = todayInput()
   for (const fixture of getDb().fixtures) {
     if (fixture.status !== 'In Use') continue
-    const exp = text(fixture.usage?.exp)
-    if (!exp || exp > today) continue
+    const dueDate = pmDueDateOf(fixture)
+    if (!dueDate || dueDate > today) continue
     fixture.status = 'PM'
     recordHistory(
       {
         sn: fixture.sn,
         action: 'PM Due',
-        detail: `ครบกำหนด PM 90 วัน (${exp}) → รอทำ PM`,
+        detail: `ครบกำหนด PM 90 วัน (${pmDueDateOf(fixture) || todayInput()}) → รอทำ PM`,
         line: fixture.line,
         model: fixture.model,
       },
@@ -329,6 +337,41 @@ const scanGuard = (request, user, phase = 'issue') => {
   return null
 }
 
+/* Mock mirror of the server step after Maintenance OK: the order waits for
+ * the requester's final Verify before history close. */
+const completeMaintenanceLoops = (sns, user) => {
+  const verified = new Set((Array.isArray(sns) ? sns : []).map(text).filter(Boolean))
+  if (!verified.size) return []
+  const awaitingRequester = []
+  for (const request of getDb().requests) {
+    if (request.status !== 'Verify' || !request.maintenancePending) continue
+    const linked = [...new Set([
+      ...(request.maintenanceSns || []),
+      ...(request.returnedItems || []),
+      ...(request.scannedIssue || []),
+    ].map((sn) => text(sn)).filter(Boolean))]
+    if (!linked.some((sn) => verified.has(sn))) continue
+    request.maintenancePending = false
+    request.maintenanceSns = linked
+    request.maintenanceCompletedAt = new Date().toISOString()
+    request.requesterFinalApproval = false
+    request.requesterFinalApprovalAt = null
+    request.verifyInfo = personFrom(user || {})
+    recordHistory(
+      {
+        request_id: request.request_id,
+        action: 'Maintenance Done',
+        detail: `Verify Maintenance เสร็จ — ${request.request_id} รอผู้ขอ Verify เพื่อปิดคำขอ (${linked.filter((sn) => verified.has(sn)).join(', ')})`,
+        line: request.line,
+        model: request.currentModel,
+      },
+      user,
+    )
+    awaitingRequester.push(request.request_id)
+  }
+  return awaitingRequester
+}
+
 const verifyMaintenanceFixture = (sn, result, outcome, user) => {
   const fixture = findFixture(sn)
   if (!fixture) return { ok: false, status: 404, sn, message: 'ไม่พบ Serial Number นี้' }
@@ -357,6 +400,8 @@ const verifyMaintenanceFixture = (sn, result, outcome, user) => {
     updateFixture(sn, {
       status: 'In Stock',
       pmDate: '',
+      pmStartDate: '',
+      pmDueDate: '',
       pmRunId: '',
       pmRequestedDays: 0,
       pmApproval: '',
@@ -750,24 +795,31 @@ const handleImportFixtureList = (items) => {
   const list = Array.isArray(items) ? items : []
   if (!list.length) fail('ไม่มีข้อมูลสำหรับ Import')
   let imported = 0
-  let created = 0
+  let inserted = 0
+  let updated = 0
+  const updatedFixtures = new Set()
 
   for (const raw of list) {
     const line = text(raw?.line)
     const model = text(raw?.model)
     if (!line || !model) continue
     const fixtureInfo = (Array.isArray(raw?.fixtureInfo) ? raw.fixtureInfo : [])
-      .map((info) => ({
-        step: text(info?.step),
-        process: text(info?.process),
-        position: text(info?.position),
-        sn: (Array.isArray(info?.sn) ? info.sn : []).map(text).filter(Boolean),
-      }))
+      .map((info) => {
+        const count = Number(info?.count)
+        return {
+          step: text(info?.step),
+          process: text(info?.process),
+          position: text(info?.position),
+          count: Number.isFinite(count) && count > 0 ? count : 0,
+          sn: (Array.isArray(info?.sn) ? info.sn : []).map(text).filter(Boolean),
+        }
+      })
       .filter((info) => info.position)
 
     const existing = getDb().fixtureLists.find((doc) => same(doc.line, line) && same(doc.model, model))
     if (existing) {
       existing.fixtureInfo = fixtureInfo
+      updated += 1
     } else {
       getDb().fixtureLists.push({
         _id: `fl-${getDb().fixtureLists.length + 1}`,
@@ -775,45 +827,23 @@ const handleImportFixtureList = (items) => {
         model,
         fixtureInfo,
       })
+      inserted += 1
     }
     imported += 1
 
+    /* Fixture List is a position/base master — never create serial records here.
+     * Only refresh step/process/position of fixtures already registered. */
     for (const info of fixtureInfo) {
-      for (const sn of info.sn) {
-        if (findFixture(sn)) continue
-        getDb().fixtures.push({
-          sn,
-          line,
-          model,
-          status: 'In Stock',
-          type: 'Mainline',
-          step: info.step,
-          process: info.process,
-          position: info.position,
-          usage: {
-            current: 0,
-            max: 100,
-            exp: dayOffset(90),
-            storage: getDb().storages[0]?.location || 'A-01',
-            usedLine: '',
-            inUseAt: '',
-            currentModel: '',
-            changeModel: '',
-          },
-          registered: { ...personFrom({}), date: new Date().toISOString() },
-          fixtureBase: fixtureBase(sn),
-          revision: (sn.match(/-(\d+)$/) || [])[1] || '01',
-          pmDate: '',
-          pmForms: [],
-          pmRequestedDays: 0,
-          pmApproval: '',
-          pmApprovedBy: '',
-          pmApprovedAt: '',
-          pmRunId: '',
-          orderStatus: '',
-          orderNote: '',
-        })
-        created += 1
+      const bases = new Set(info.sn.map((sn) => fixtureBase(sn)).filter(Boolean))
+      if (!bases.size) continue
+      for (const fixture of getDb().fixtures) {
+        if (!bases.has(fixtureBase(fixture.fixtureBase || fixture.sn))) continue
+        fixture.line = line
+        fixture.model = model
+        fixture.step = info.step
+        fixture.process = info.process
+        fixture.position = info.position
+        updatedFixtures.add(fixture.sn)
       }
     }
   }
@@ -821,20 +851,34 @@ const handleImportFixtureList = (items) => {
   return {
     success: true,
     count: imported,
-    created,
-    message: `นำเข้าข้อมูล ${imported} Line/Model เรียบร้อย${created ? ` · เพิ่ม Fixture ใหม่ ${created} ตัว` : ''}`,
+    inserted,
+    updated,
+    detailsUpdated: updatedFixtures.size,
+    created: 0,
+    message: `นำเข้าข้อมูล ${imported} Line/Model เรียบร้อย · เพิ่มใหม่ ${inserted} รายการ, อัปเดต ${updated} รายการ, อัปเดต Fixture ${updatedFixtures.size} ตัว`,
   }
 }
 
 const handleCreateRequest = (body) => {
   const type = text(body?.type)
-  const line = text(body?.line)
-  const currentModel = text(body?.currentModel || body?.model)
+  let line = text(body?.line)
+  let currentModel = text(body?.currentModel || body?.model)
   const changeModel = text(body?.changeModel || body?.modelTo)
   const changeBy = type === 'Change Model' && text(body?.changeBy) === 'machine' ? 'machine' : 'line'
   const machine = text(body?.machine)
   const queueDate = text(body?.queueDate) || todayInput()
   const queueSlot = text(body?.queueSlot)
+  const breakdownItems = Array.isArray(body?.breakdownItems)
+    ? body.breakdownItems
+        .map((item) => ({ sn: text(item?.sn), symptom: text(item?.symptom) }))
+        .filter((item) => item.sn || item.symptom)
+    : []
+
+  if (type === 'Breakdown' && breakdownItems.length) {
+    const firstFixture = breakdownItems.map((item) => findFixture(item.sn)).find(Boolean)
+    if (!line && firstFixture?.line) line = text(firstFixture.line)
+    if (!currentModel && firstFixture?.model) currentModel = text(firstFixture.model)
+  }
 
   if (!type || !line) fail('กรุณาระบุประเภทคำขอและ Line')
   if (!['Change Model', 'Breakdown'].includes(type)) fail('ประเภทคำขอไม่ถูกต้อง')
@@ -858,12 +902,6 @@ const handleCreateRequest = (body) => {
       )
     }
   }
-
-  const breakdownItems = Array.isArray(body?.breakdownItems)
-    ? body.breakdownItems
-        .map((item) => ({ sn: text(item?.sn), symptom: text(item?.symptom) }))
-        .filter((item) => item.sn || item.symptom)
-    : []
 
   const active = ['Waiting', 'Progress', 'Hold', 'Verify']
   if (type === 'Breakdown') {
@@ -922,8 +960,16 @@ const handleCreateRequest = (body) => {
     desc,
     breakdownItems,
     items: [],
+    scannedIssue: [],
+    returnedItems: [],
     scanMatches: [],
     returnApprovals: [],
+    issueDone: false,
+    returnDone: false,
+    maintenancePending: false,
+    maintenanceSns: [],
+    requesterFinalApproval: false,
+    requesterFinalApprovalAt: null,
     requestInfo: personFrom(body?.user),
   }
   getDb().requests.push(request)
@@ -1115,6 +1161,8 @@ const handleConfirmScan = (requestId, body) => {
       'usage.current': (Number(fixture.usage?.current) || 0) + 1,
       'usage.usedLine': request.line || '',
       'usage.inUseAt': inUseAt,
+      pmStartDate: inUseAt,
+      pmDueDate: addDaysInput(inUseAt, 90),
       'usage.exp': addDaysInput(inUseAt, 90),
       'usage.currentModel': request.changeModel || request.currentModel || '',
       'usage.changeModel': '',
@@ -1166,6 +1214,60 @@ const handleVerifyRequest = (requestId, body) => {
   const actor = actorId(body?.user)
   const requester = text(request.requestInfo?.empId).toLowerCase()
   const assignee = text(request.acceptInfo?.empId || request.issueInfo?.empId).toLowerCase()
+
+  // Final requester Verify is deliberately separate from Maintenance OK.
+  if (body?.finalApproval === true || body?.requesterFinal === true) {
+    if (!request.returnDone) fail('ยังไม่บันทึกการรับคืนของคำขอนี้', 409)
+    if (!request.maintenanceCompletedAt) fail('ยังรอ Maintenance เสร็จก่อน Verify ผู้ขอ', 409)
+    if (request.requesterFinalApproval) fail('ผู้ขอ Verify ปิดคำขอนี้แล้ว', 409)
+    if (!actor || actor !== requester) fail('เฉพาะผู้ขอเท่านั้นที่ Verify ปิดงานได้', 403)
+
+    request.requesterFinalApproval = true
+    request.requesterFinalApprovalAt = new Date().toISOString()
+    request.verifyInfo = personFrom(body?.user)
+
+    for (const sn of request.items || []) {
+      recordHistory(
+        {
+          sn,
+          request_id: request.request_id,
+          action: 'Verify',
+          detail: `ME/TE ยืนยันผล Maintenance และปิดคำขอ ${request.request_id}`,
+          line: request.line,
+          model: request.currentModel,
+        },
+        body?.user,
+      )
+    }
+
+    const verifiedSn = [...new Set([
+      ...(request.scannedIssue || []),
+      ...(request.returnedItems || []),
+      ...(request.maintenanceSns || []),
+      ...(request.items || []),
+    ].map((sn) => text(sn)).filter(Boolean))]
+    const signers = (request.returnApprovals || [])
+      .map((item) => `${item.role}:${item.name || item.empId || '-'}`)
+      .join(', ')
+    recordHistory(
+      {
+        request_id: request.request_id,
+        action: 'Verify (Requester)',
+        detail: `ปิดคำขอ ${request.request_id} · ${request.type || '-'} · ${verifiedSn.length} ตัว${verifiedSn.length ? ` (${verifiedSn.join(', ')})` : ''} · หลัง Maintenance OK${signers ? ` · ${signers}` : ''}`,
+        line: request.line,
+        model: request.currentModel,
+      },
+      body?.user,
+    )
+
+    request.status = 'Done'
+    return {
+      success: true,
+      request: clone(request),
+      message: `Verify สำเร็จ — ${request.request_id} ปิดงานแล้ว`,
+    }
+  }
+
   const roles = []
   if (actor && actor === requester) roles.push('requester')
   if (actor && actor === assignee && !roles.includes('assignee')) roles.push('assignee')
@@ -1251,14 +1353,18 @@ const handleVerifyRequest = (requestId, body) => {
     }
   }
 
+  const wantsMaintenance = body?.maintenance === true || body?.needMaintenance === true
   if (!request.returnDone) {
     const returned = []
     for (const item of returnItems) {
       const fixture = findFixture(item.sn)
-      if (!fixture || fixture.status === 'In Stock') continue
+      if (!fixture) continue
+      if (!wantsMaintenance && fixture.status === 'In Stock') continue
       assertEditable(fixture)
       updateFixture(fixture.sn, {
-        status: 'In Stock',
+        status: wantsMaintenance ? 'Maintenance' : 'In Stock',
+        pmStartDate: '',
+        pmDueDate: '',
         'usage.current': 0,
         'usage.usedLine': '',
         'usage.inUseAt': '',
@@ -1270,7 +1376,7 @@ const handleVerifyRequest = (requestId, body) => {
           sn: fixture.sn,
           request_id: request.request_id,
           action: 'Return (Verify)',
-          detail: `รับคืน ${fixture.sn} → In Stock ตอน Verify ${request.request_id}`,
+          detail: `รับคืน ${fixture.sn} → ${wantsMaintenance ? 'Maintenance (รอซ่อม)' : 'In Stock'} ตอน Verify ${request.request_id}`,
           line: request.line,
           model: request.currentModel,
         },
@@ -1280,6 +1386,35 @@ const handleVerifyRequest = (requestId, body) => {
     }
     request.returnedItems = returned
     request.returnDone = true
+  }
+
+  request.verifyInfo = personFrom(body?.user)
+
+  if (wantsMaintenance) {
+    const pendingSns = [...new Set(
+      (request.returnedItems || []).map((sn) => text(sn)).filter(Boolean),
+    )]
+    request.maintenancePending = true
+    request.maintenanceSns = pendingSns
+    request.maintenanceRequestedAt = new Date().toISOString()
+    request.maintenanceCompletedAt = null
+    request.status = 'Verify'
+    recordHistory(
+      {
+        request_id: request.request_id,
+        action: 'Maintenance Pending',
+        detail: `Verify สำเร็จ — ${request.request_id} รอ Maintenance ${pendingSns.length} ตัว ไปที่หน้า PM & Maintenance เพื่อตรวจรับ`,
+        line: request.line,
+        model: request.currentModel,
+      },
+      body?.user,
+    )
+    return {
+      success: true,
+      request: clone(request),
+      maintenancePending: true,
+      message: `Verify สำเร็จ — ${request.request_id} รอ Maintenance ${pendingSns.length} ตัว (ไปที่ PM & Maintenance)`,
+    }
   }
 
   for (const sn of request.items || []) {
@@ -1340,6 +1475,8 @@ const handleBreakdown = (requestId, body) => {
       'usage.current': (Number(fixture.usage?.current) || 0) + 1,
       'usage.usedLine': request.line || '',
       'usage.inUseAt': inUseAt,
+      pmStartDate: inUseAt,
+      pmDueDate: addDaysInput(inUseAt, 90),
       'usage.exp': addDaysInput(inUseAt, 90),
     })
     recordHistory(
@@ -1823,10 +1960,11 @@ export async function mockRequest(path, { method = 'GET', body } = {}) {
       if (days > 7 && !hasForm) {
         fail('PM เกิน 7 วัน ต้อง Import เอกสาร 4M ก่อนอนุมัติ', 400, { need4M: true })
       }
-      const base = fixture.usage?.exp ? new Date(`${fixture.usage.exp}T00:00:00`) : new Date()
+      const due = pmDueDateOf(fixture)
+      const base = due ? new Date(`${due}T00:00:00`) : new Date()
       base.setDate(base.getDate() + days)
       const iso = `${base.getFullYear()}-${pad(base.getMonth() + 1)}-${pad(base.getDate())}`
-      const set = { 'usage.exp': iso }
+      const set = { pmDueDate: iso }
       if (formUrl) set.pmForms = [...(fixture.pmForms || []), formUrl]
       updateFixture(fixture.sn, set)
       recordHistory(
@@ -1839,7 +1977,7 @@ export async function mockRequest(path, { method = 'GET', body } = {}) {
         },
         body?.user,
       )
-      return clone({ success: true, exp: iso, message: `ขยาย PM ของ ${sn} ไปถึง ${iso}` })
+      return clone({ success: true, pmDueDate: iso, exp: iso, message: `ขยาย PM ของ ${sn} ไปถึง ${iso}` })
     }
     if (verb === 'POST' && parts[1] === 'assign') {
       const sn = text(body?.sn)
@@ -1853,9 +1991,10 @@ export async function mockRequest(path, { method = 'GET', body } = {}) {
       assertEditable(fixture)
       const set = { status: 'Maintenance' }
       if (days > 0) {
-        const base = fixture.usage?.exp ? new Date(`${fixture.usage.exp}T00:00:00`) : new Date()
+        const due = pmDueDateOf(fixture)
+        const base = due ? new Date(`${due}T00:00:00`) : new Date()
         base.setDate(base.getDate() + days)
-        set['usage.exp'] = `${base.getFullYear()}-${pad(base.getMonth() + 1)}-${pad(base.getDate())}`
+        set.pmDueDate = `${base.getFullYear()}-${pad(base.getMonth() + 1)}-${pad(base.getDate())}`
       }
       updateFixture(fixture.sn, set)
       recordHistory(
@@ -1881,11 +2020,12 @@ export async function mockRequest(path, { method = 'GET', body } = {}) {
     if (verb === 'POST' && parts[1] === 'verify' && parts[2] === 'bulk') {
       const sns = Array.isArray(body?.sns) ? body.sns.map(text).filter(Boolean) : []
       if (!sns.length) fail('กรุณาเลือก Fixture อย่างน้อย 1 ตัว')
+      const result = text(body?.result)
       const processed = []
       const skipped = []
       for (const sn of sns) {
         try {
-          const verified = verifyMaintenanceFixture(sn, text(body?.result), text(body?.outcome), body?.user)
+          const verified = verifyMaintenanceFixture(sn, result, text(body?.outcome), body?.user)
           if (!verified.ok) {
             skipped.push({ sn, message: verified.message })
             continue
@@ -1902,12 +2042,16 @@ export async function mockRequest(path, { method = 'GET', body } = {}) {
       if (!processed.length) {
         fail(skipped[0]?.message || 'ไม่สามารถ Verify Fixture ที่เลือกได้', 409, { skipped, processed })
       }
+      const closedRequests = result === 'OK'
+        ? completeMaintenanceLoops(processed.map((item) => item.sn), body?.user)
+        : []
       return clone({
         success: true,
         count: processed.length,
         processed,
         skipped,
-        message: `Verify ${processed.length} ตัวสำเร็จ${skipped.length ? ` · ข้าม ${skipped.length} ตัว` : ''}`,
+        closedRequests,
+        message: `Verify ${processed.length} ตัวสำเร็จ${skipped.length ? ` · ข้าม ${skipped.length} ตัว` : ''}${closedRequests.length ? ` · ${closedRequests.join(', ')} รอผู้ขอ Verify` : ''}`,
       })
     }
     if (verb === 'POST' && parts[1] === 'verify') {
@@ -1923,12 +2067,18 @@ export async function mockRequest(path, { method = 'GET', body } = {}) {
           sn: verified.sn,
         })
       }
+      const closedRequests = verified.result === 'OK'
+        ? completeMaintenanceLoops([verified.sn], body?.user)
+        : []
       return clone({
         success: true,
         result: verified.result,
         ...(verified.result === 'NG' ? { outcome: verified.outcome } : {}),
         fixture: verified.fixture,
-        message: verified.message,
+        closedRequests,
+        message: closedRequests.length
+          ? `${verified.message} · ${closedRequests.join(', ')} รอผู้ขอ Verify เพื่อปิดคำขอ`
+          : verified.message,
       })
     }
   }
@@ -1987,9 +2137,14 @@ export async function mockRequest(path, { method = 'GET', body } = {}) {
         maintenance: 0,
       })
     }
+    const expiryStats = { expiringIn3Days: 0, expired: 0 }
     for (const fixture of fixtures) {
       const key = fixture.status || 'Unknown'
       counts[key] = (counts[key] || 0) + 1
+
+      const expDays = daysUntil(fixture.usage?.exp)
+      if (expDays !== null && expDays >= 0 && expDays <= 3) expiryStats.expiringIn3Days += 1
+      if (expDays !== null && expDays < 0) expiryStats.expired += 1
 
       const lineKey = fixture.line || 'N/A'
       const lineRow = lineMap.get(lineKey) || {
@@ -2032,7 +2187,7 @@ export async function mockRequest(path, { method = 'GET', body } = {}) {
       .map(decoratePm)
       .filter((fixture) => !fixture.pmStates.every((state) => state === 'tracked'))
       .sort((a, b) => {
-        const rank = { 'over-due': 0, 'overdue-remind': 1, 'on-due': 2, 'usage-remind': 3, 'pre-alert': 4, tracked: 5 }
+        const rank = { 'over-due': 0, 'overdue-remind': 1, 'on-due': 2, 'pre-alert': 3, tracked: 4 }
         return (
           Math.min(...a.pmStates.map((state) => rank[state] ?? 6)) -
           Math.min(...b.pmStates.map((state) => rank[state] ?? 6))
@@ -2053,6 +2208,8 @@ export async function mockRequest(path, { method = 'GET', body } = {}) {
         model: fixture.model,
         type: fixture.type,
         pmDate: fixture.pmDate,
+        pmStartDate: pmStartDateOf(fixture),
+        pmDueDate: pmDueDateOf(fixture),
         usage: fixture.usage,
         pmForms: fixture.pmForms,
         pmOverdueDays: pmOverdueDays(fixture),
@@ -2171,6 +2328,7 @@ export async function mockRequest(path, { method = 'GET', body } = {}) {
       activeByProcess,
       requestTrend: [...trendMap.values()],
       topBreakdown,
+      expiryStats,
       pmAlerts,
       pmStateCounts,
       maintenanceQueue,
@@ -2235,13 +2393,14 @@ export function mockPmUpload(sn, file, user) {
   return clone({ success: true, url, originalName: file?.name || 'mock-4m.pdf' })
 }
 
-export function mockPmUploadGroup(line, model, file, days, user) {
-  if (!line || !model) fail('Fixture ที่ไม่มี Line / Model ไม่ต้องแนบเอกสาร 4M')
+export function mockPmUploadGroup(line, model, docNo, days, user) {
+  if (!line || !model) fail('Fixture ที่ไม่มี Line / Model ไม่ต้องใส่ Doc NO. 4M')
   const amount = Number(days)
   if (!Number.isFinite(amount) || amount < 1 || amount > 365) {
     fail('กรุณาระบุจำนวนวันที่ต้องการทำ PM (1–365)')
   }
-  if (!file) fail('กรุณาเลือกไฟล์เอกสาร 4M')
+  const value = String(docNo || '').trim()
+  if (!value) fail('กรุณากรอก Doc NO. 4M')
   syncPmStatuses()
   const overdue = getDb().fixtures.filter(
     (fixture) =>
@@ -2254,10 +2413,9 @@ export function mockPmUploadGroup(line, model, file, days, user) {
     fail(`ไม่มี Fixture ใน Line ${line} / Model ${model} ที่เกินกำหนด PM มากกว่า 3 วัน`)
   }
   const needsApproval = amount > 7
-  const url = `/uploads/pm/mock-group-${Date.now()}.pdf`
   for (const fixture of overdue) {
     const set = {
-      pmForms: [...(fixture.pmForms || []), url],
+      pmForms: [...(fixture.pmForms || []), value],
       pmRequestedDays: amount,
       pmApproval: needsApproval ? 'Pending' : 'NotRequired',
       pmApprovedBy: '',
@@ -2269,7 +2427,7 @@ export function mockPmUploadGroup(line, model, file, days, user) {
       {
         sn: fixture.sn,
         action: needsApproval ? '4M Approval Request' : '4M Document',
-        detail: `แนบเอกสาร 4M ประจำ Line ${line} / Model ${model} · ขอทำ PM ${amount} วัน${needsApproval ? ' → รอ Admin อนุมัติ' : ''}: ${file?.name || 'mock-4m.pdf'}`,
+        detail: `ใส่ Doc NO. 4M ประจำ Line ${line} / Model ${model} · ขอทำ PM ${amount} วัน${needsApproval ? ' → รอ Admin อนุมัติ' : ''}: ${value}`,
         line,
         model,
       },
@@ -2278,16 +2436,15 @@ export function mockPmUploadGroup(line, model, file, days, user) {
   }
   return clone({
     success: true,
-    url,
+    docNo: value,
     line,
     model,
     count: overdue.length,
     sns: overdue.map((fixture) => fixture.sn),
-    originalName: file?.name || 'mock-4m.pdf',
     days: amount,
     needsApproval,
     message: needsApproval
-      ? `แนบ 4M ให้ ${overdue.length} ตัวแล้ว · ขอ PM ${amount} วัน — รอ Admin อนุมัติก่อนเข้าซ่อม`
-      : `แนบ 4M ให้ ${overdue.length} ตัวแล้ว · กำหนด PM ${amount} วัน — พร้อมกดกำลังทำ PM`,
+      ? `ใส่ Doc NO. 4M ให้ ${overdue.length} ตัวแล้ว · ขอ PM ${amount} วัน — รอ Admin อนุมัติก่อนเข้าซ่อม`
+      : `ใส่ Doc NO. 4M ให้ ${overdue.length} ตัวแล้ว · กำหนด PM ${amount} วัน — พร้อมกดกำลังทำ PM`,
   })
 }

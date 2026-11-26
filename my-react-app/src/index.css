@@ -168,6 +168,20 @@ input[type="number"] {
   animation: fan2-fade-up 0.28s ease-out both;
 }
 
+@keyframes fan2-slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-slide-down {
+  animation: fan2-slide-down 0.22s ease-out both;
+}
+
 @keyframes fan2-toast-in {
   from {
     opacity: 0;

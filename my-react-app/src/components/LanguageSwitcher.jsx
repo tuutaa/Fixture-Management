@@ -5,7 +5,7 @@ const activeClass = 'bg-blue-600 text-white shadow-inner'
 const inactiveClass = 'text-slate-400 hover:bg-slate-50 hover:text-blue-600'
 
 export default function LanguageSwitcher() {
-  const { lang, setLang, t } = useLanguage()
+  const { lang, setLang, t, ui } = useLanguage()
 
   return (
     <div
@@ -20,7 +20,7 @@ export default function LanguageSwitcher() {
         title={t('สลับเป็นภาษาไทย', 'Switch to Thai')}
         className={`${baseClass} ${lang === 'TH' ? activeClass : inactiveClass} border-r border-slate-100`}
       >
-        TH
+        {ui('thai')}
       </button>
       <button
         type="button"
@@ -29,7 +29,7 @@ export default function LanguageSwitcher() {
         title={t('สลับเป็นภาษาอังกฤษ', 'Switch to English')}
         className={`${baseClass} ${lang === 'ENG' ? activeClass : inactiveClass}`}
       >
-        ENG
+        {ui('english')}
       </button>
     </div>
   )

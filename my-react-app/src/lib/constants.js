@@ -19,7 +19,7 @@ export const HISTORY_SECTION_ACTIONS = {
   order: [
     'Register', 'Request', 'Accept', 'Hold', 'Reject', 'Complete',
     'Issue', 'Issue (Scan)', 'Breakdown', 'Issue Spare',
-    'Verify', 'Return', 'Return (Verify)', 'Edit', 'Delete', 'Order',
+    'Verify', 'Return', 'Return (Verify)', 'Maintenance Pending', 'Maintenance Done', 'Verify (Requester)', 'Edit', 'Delete', 'Order',
   ],
   pm: [
     'PM Due', '4M Document', '4M Approval Request', '4M Approve', '4M Assign',
@@ -218,13 +218,12 @@ export const RETURN_TARGETS = [
 ]
 
 /* PM states (computed จาก usage.exp / usage.current vs max) */
-export const PM_STATES = ['pre-alert', 'overdue-remind', 'usage-remind', 'on-due', 'over-due']
+export const PM_STATES = ['pre-alert', 'overdue-remind', 'on-due', 'over-due']
 
 export const PM_STATE_TONE = {
   tracked: { label: 'Tracking', chip: 'bg-slate-100 text-slate-500 ring-slate-500/10' },
   'pre-alert': { label: 'Pre-Alert', chip: 'bg-amber-50 text-amber-700 ring-amber-600/10' },
   'overdue-remind': { label: 'Overdue 3 day (Orange)', chip: 'bg-orange-50 text-orange-700 ring-orange-600/10' },
-  'usage-remind': { label: 'Current reach 80% (Orange)', chip: 'bg-orange-50 text-orange-700 ring-orange-600/10' },
   'on-due': { label: 'PM On Due', chip: 'bg-blue-50 text-blue-600 ring-blue-600/10' },
   'over-due': { label: 'PM Over Due', chip: 'bg-red-50 text-red-700 ring-red-600/10' },
 }
@@ -233,7 +232,6 @@ export const PM_STATE_RANK = {
   'over-due': 0,
   'overdue-remind': 1,
   'on-due': 2,
-  'usage-remind': 3,
   'pre-alert': 4,
   tracked: 5,
 }

@@ -31,11 +31,14 @@ const LABELS = {
     Issued: ['จ่ายแล้ว', 'Issued'],
     Verified: ['ตรวจสอบแล้ว', 'Verified'],
   },
+  fixturePM: {
+    PM: ['PM (รอซ่อม)', 'PM'],
+    'PM Pending': ['PM (รอ Admin)', 'PM Pending'],
+  },
   pm: {
     tracked: ['ติดตามผล', 'Tracking'],
     'pre-alert': ['แจ้งล่วงหน้า', 'Pre-Alert'],
     'overdue-remind': ['เกินกำหนด 3 วัน', 'Overdue 3 days'],
-    'usage-remind': ['ใช้งานถึง 80%', 'Current reach 80%'],
     'on-due': ['ถึงกำหนด PM', 'PM On Due'],
     'over-due': ['เกินกำหนด PM', 'PM Over Due'],
   },
@@ -57,17 +60,21 @@ const label = (t, group, value) => {
 }
 
 export function useLabels() {
-  const { t, lang, setLang } = useLanguage()
+  const { t, ui, lang, setLang } = useLanguage()
   return useMemo(() => ({
     t,
+    ui,
     lang,
     setLang,
-    fixtureStatus: (status) => label(t, 'fixture', status),
+    fixtureStatus: (status) => {
+      const known = LABELS.fixture[status] ? 'fixture' : LABELS.fixturePM[status] ? 'fixturePM' : 'fixture'
+      return label(t, known, status)
+    },
     requestStatus: (status) => label(t, 'request', status),
     orderState: (state) => label(t, 'orderState', state),
     pmState: (state) => label(t, 'pm', state),
     requestType: (type) => label(t, 'requestType', type),
-  }), [t, lang, setLang])
+  }), [t, ui, lang, setLang])
 }
 
 /* Backend messages are authored in Thai. Map the common ones so toasts and
@@ -138,6 +145,9 @@ const MESSAGES = {
     'Outcome must be Need Scrape / Need PR / Already have PR / New One Replacement',
   'Fixture ที่ไม่มี Line / Model ไม่ต้องแนบเอกสาร 4M':
     'Fixtures without line / model do not need a 4M document',
+  'Fixture ที่ไม่มี Line / Model ไม่ต้องใส่ Doc NO. 4M':
+    'Fixtures without line / model do not need a 4M Doc NO.',
+  'กรุณากรอก Doc NO. 4M': 'Please enter the 4M Doc NO.',
   'กรุณาเลือก Fixture ที่ต้อง Verify': 'Please select the fixtures to verify',
   'ไม่มี Fixture ที่ Verify ได้': 'No fixture can be verified',
   'กรุณาเลือก Line และ Model ก่อนส่ง PM': 'Please choose a line and model before starting PM',
@@ -175,6 +185,20 @@ const dynamicMessage = (text) => {
   if (m) return [text, `Updated ${m[1]} item(s) successfully — ${m[2]} is ready for requester verification`]
   m = text.match(/^Verify สำเร็จ — (.+) ปิดงานแล้ว$/)
   if (m) return [text, `Verify successful — ${m[1]} closed`]
+  m = text.match(/^Verify สำเร็จ — (.+) รอ Maintenance (\d+) ตัว \(ไปที่ PM & Maintenance\)$/)
+  if (m) return [text, `Verify successful — ${m[1]} awaiting maintenance for ${m[2]} fixture(s) (see PM & Maintenance)`]
+  m = text.match(/^Verify สำเร็จ — (.+) รอ Maintenance (\d+) ตัว ไปที่หน้า PM & Maintenance เพื่อตรวจรับ$/)
+  if (m) return [text, `Verify successful — ${m[1]} is waiting for maintenance on ${m[2]} fixture(s)`]
+  m = text.match(/^Verify OK (\d+) ตัว — กลับเข้า In Stock แล้ว · (.+) รอผู้ขอ Verify$/)
+  if (m) return [text, `Verified OK: ${m[1]} fixture(s) — back In Stock · ${m[2]} awaiting requester Verify`]
+  m = text.match(/^Verify (\d+) ตัวสำเร็จ.*· (.+) รอผู้ขอ Verify$/)
+  if (m) return [text, `Verified ${m[1]} fixture(s) successfully · ${m[2]} awaiting requester Verify`]
+  m = text.match(/^Verify Maintenance เสร็จ — (.+) รอผู้ขอ Verify เพื่อปิดคำขอ \(([^)]*)\)$/)
+  if (m) return [text, `Maintenance verified — ${m[1]} awaiting requester Verify before close (${m[2]})`]
+  m = text.match(/^(.+) · (.+) รอผู้ขอ Verify เพื่อปิดคำขอ$/)
+  if (m) return [text, `${m[1]} · ${m[2]} awaiting requester Verify before close`]
+  m = text.match(/^รับคืน (.+) → Maintenance \(รอซ่อม\) ตอน Verify (.+)$/)
+  if (m) return [text, `Returned ${m[1]} → Maintenance (awaiting repair) at verify of ${m[2]}`]
   m = text.match(/^นำเข้าข้อมูลเรียบร้อย: เพิ่มใหม่ (\d+) รายการ, อัปเดต (\d+) รายการ, อัปเดต Fixture (\d+) ตัว$/)
   if (m) return [text, `Import complete: ${m[1]} added, ${m[2]} updated, ${m[3]} fixtures corrected`]
   m = text.match(/^นำเข้าข้อมูลเรียบร้อย: เพิ่มใหม่ (\d+) รายการ, อัปเดต (\d+) รายการ$/)
@@ -199,10 +223,10 @@ const dynamicMessage = (text) => {
   if (m) return [text, `No fixture is ready to start PM in line ${m[1]} / model ${m[2]}`]
   m = text.match(/^เริ่ม PM (\d+) ตัว → PM & Maintenance \((.+)\) · Line (.+) \/ Model (.+)(?: · ข้าม (\d+) ตัว)?$/)
   if (m) return [text, `Started PM for ${m[1]} fixture(s) → PM & Maintenance (${m[2]}) · line ${m[3]} / model ${m[4]}${m[5] ? ` · skipped ${m[5]}` : ''}`]
-  m = text.match(/^แนบ 4M ให้ (\d+) ตัวแล้ว · ขอ PM (\d+) วัน — รอ Admin อนุมัติก่อนเข้าซ่อม$/)
-  if (m) return [text, `4M attached to ${m[1]} fixture(s) · ${m[2]} days of PM — awaiting Admin approval before repair`]
-  m = text.match(/^แนบ 4M ให้ (\d+) ตัวแล้ว · กำหนด PM (\d+) วัน — พร้อมกดกำลังทำ PM$/)
-  if (m) return [text, `4M attached to ${m[1]} fixture(s) · ${m[2]} days of PM — ready to start PM`]
+  m = text.match(/^(?:แนบ|ใส่ Doc NO\.) 4M ให้ (\d+) ตัวแล้ว · ขอ PM (\d+) วัน — รอ Admin อนุมัติก่อนเข้าซ่อม$/)
+  if (m) return [text, `4M Doc NO. saved for ${m[1]} fixture(s) · ${m[2]} days of PM — awaiting Admin approval before repair`]
+  m = text.match(/^(?:แนบ|ใส่ Doc NO\.) 4M ให้ (\d+) ตัวแล้ว · กำหนด PM (\d+) วัน — พร้อมกดกำลังทำ PM$/)
+  if (m) return [text, `4M Doc NO. saved for ${m[1]} fixture(s) · ${m[2]} days of PM — ready to start PM`]
   m = text.match(/^(.+) อนุมัติ PM (\d+) วัน — เข้าสู่ Maintenance แล้ว$/)
   if (m) return [text, `Approved ${m[2]} days of PM for ${m[1]} — now in Maintenance`]
   m = text.match(/^(.+) ปฏิเสธ PM — กลับไปรอทำ PM$/)

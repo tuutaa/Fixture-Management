@@ -66,7 +66,7 @@ const FIELD_LABELS = {
   revision: ['Revision', 'Revision'],
   current: ['การใช้งานปัจจุบัน', 'Usage current'],
   max: ['การใช้งานสูงสุด', 'Usage max'],
-  exp: ['Exp (PM Due)', 'Exp (PM Due)'],
+  exp: ['Expiry date', 'Expiry date'],
   registeredDate: ['วันที่ลงทะเบียน', 'Registered date'],
   desc: ['รายละเอียด', 'Description'],
 }
@@ -122,11 +122,22 @@ const positionsForProcess = (options, processValue) => {
   return valuesFor(options, 'positions')
 }
 
+/* PM starts at usage.inUseAt + 90 days. usage.exp is the fixture expiry date. */
+const pmDueDateOf = (row) => {
+  const explicit = String(row?.pmDueDate || '').trim()
+  if (/^\d{4}-\d{2}-\d{2}/.test(explicit)) return explicit.slice(0, 10)
+  const start = String(row?.usage?.inUseAt || row?.pmStartDate || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}/.test(start)) return ''
+  const date = new Date(`${start.slice(0, 10)}T00:00:00`)
+  date.setDate(date.getDate() + 90)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
 /* Mirrors the server 4M guard: overdue > 3 days with no attached pmForms.
- * Prefer an explicit server flag; otherwise derive it from usage.exp. */
+ * Prefer an explicit server flag; otherwise derive it from the PM due date. */
 const fixture4MBlock = (row) => {
   if (!row) return null
-  const days = daysUntil(row.usage?.exp)
+  const days = daysUntil(pmDueDateOf(row))
   const overdueDays = days === null ? 0 : Math.max(0, -days)
   const hasForms = Array.isArray(row.pmForms) && row.pmForms.length > 0
   const needs4M =
@@ -141,8 +152,8 @@ const fixture4MBlock = (row) => {
 
 const block4MMessage = (block, t) =>
   t(
-    `Fixture ${block.sn} เกินกำหนด PM ${block.days} วัน — กรุณาแนบเอกสาร 4M ก่อนแก้ไขข้อมูล`,
-    `Fixture ${block.sn} is ${block.days} days overdue — attach the 4M document before editing`,
+    `Fixture ${block.sn} เกินกำหนด PM ${block.days} วัน — กรุณาใส่ Doc NO. 4M ก่อนแก้ไขข้อมูล`,
+    `Fixture ${block.sn} is ${block.days} days overdue — enter the 4M Doc NO. before editing`,
   )
 
 /* Mirrors the shared status chip markup, with a translated label. */
@@ -608,10 +619,12 @@ export default function EditFixturePage({ user }) {
       },
       {
         key: 'exp',
-        header: t('Exp (PM Due)', 'Exp (PM Due)'),
+        header: t('PM due / Expiry', 'PM due / Expiry'),
         render: (row) => (
-          <span className={cn('font-mono text-[11px]', !row.usage?.exp && 'text-slate-400')}>
-            {formatDate(row.usage?.exp)}
+          <span className="font-mono text-[11px]">
+            <b className="text-blue-700">{formatDate(pmDueDateOf(row))}</b>
+            <span className="mx-1 text-slate-300">/</span>
+            <span className={cn(!row.usage?.exp && 'text-slate-400')}>{formatDate(row.usage?.exp)}</span>
           </span>
         ),
       },
@@ -680,7 +693,7 @@ export default function EditFixturePage({ user }) {
       return
     }
     if (!bulkExp) {
-      toast.error(t('กรุณาเลือก Exp (PM Due)', 'Please pick an exp (PM due) date'))
+      toast.error(t('กรุณาเลือกวันหมดอายุ', 'Please pick an expiry date'))
       return
     }
     if (bulk4MBlocks.length > 0) {
@@ -694,7 +707,9 @@ export default function EditFixturePage({ user }) {
       const res = await api.updateFixtureExpBulk({ sns, exp: bulkExp, user })
       setBlocked4MMessage('')
       toast.success(
-        res?.message ? sm(res.message) : t(`อัปเดต Exp ${sns.length} Fixture แล้ว`, `Updated exp for ${sns.length} fixtures`),
+        res?.message
+          ? sm(res.message)
+          : t(`อัปเดตวันหมดอายุ ${sns.length} Fixture แล้ว`, `Updated expiry for ${sns.length} fixtures`),
       )
       setDueSelected(new Set())
       await Promise.all([fetchDueFixtures(dueFilters), fetchFixtures(filters), loadFieldOptions()])
@@ -942,8 +957,8 @@ export default function EditFixturePage({ user }) {
             <p className="text-[12px] font-black leading-relaxed text-red-800">{active4MMessage}</p>
             <p className="text-[11px] font-semibold leading-relaxed text-red-600">
               {t(
-                'การแก้ไข / ลบ / อัปเดต Exp ถูกบล็อก — กรุณาแนบเอกสาร 4M ในหน้า PM สำหรับ Line นี้ แล้วลองใหม่อีกครั้ง',
-                'Edit / delete / exp update is blocked — attach the 4M document in the PM page for this line, then try again',
+                'การแก้ไข / ลบ / อัปเดตวันหมดอายุถูกบล็อก — กรุณาใส่ Doc NO. 4M ในหน้า PM สำหรับ Line นี้ แล้วลองใหม่อีกครั้ง',
+                'Edit / delete / exp update is blocked — enter the 4M Doc NO. in the PM page for this line, then try again',
               )}
             </p>
           </div>
@@ -1029,7 +1044,8 @@ export default function EditFixturePage({ user }) {
                   <InfoRow label={t('ตำแหน่งเก็บ', 'Storage')} value={fixture.usage?.storage || fixture.storage} />
                   <InfoRow label={t('Fixture Base', 'Fixture Base')} value={fixture.fixtureBase} mono />
                   <InfoRow label={t('Usage', 'Usage')} value={`${fixture.usage?.current || 0} / ${fixture.usage?.max || 0}`} />
-                  <InfoRow label={t('Exp', 'Exp')} value={formatDate(fixture.usage?.exp)} />
+                  <InfoRow label={t('PM due', 'PM due')} value={formatDate(pmDueDateOf(fixture))} />
+                  <InfoRow label={t('Expiry', 'Expiry')} value={formatDate(fixture.usage?.exp)} />
                   <InfoRow
                     label={t('ลงทะเบียนโดย', 'Registered by')}
                     value={[fixture.registered?.name, fixture.registered?.lastname].filter(Boolean).join(' ') || '-'}
@@ -1225,7 +1241,7 @@ export default function EditFixturePage({ user }) {
                         onChange={(event) => setField('max', event.target.value)}
                       />
                     </FormField>
-                    <FormField label={t('Exp (PM Due)', 'Exp (PM Due)')}>
+                    <FormField label={t('Expiry date', 'Expiry date')}>
                       <Input
                         className={dirtyClass('exp')}
                         type="date"
@@ -1341,7 +1357,7 @@ export default function EditFixturePage({ user }) {
               onClear: clearDueFilters,
               loading: dueResultsLoading,
               error: dueResultsError,
-              note: t('เลือก Fixture ในตาราง แล้วกำหนด Exp ร่วมกันด้านล่าง', 'Check fixtures in the table, then set one shared exp date below'),
+              note: t('เลือก Fixture ในตาราง แล้วกำหนดวันหมดอายุร่วมกันด้านล่าง', 'Check fixtures in the table, then set one shared expiry date below'),
             })}
             <Card className="flex min-w-0 flex-col overflow-hidden lg:h-[570px]">
               <div className="min-h-0 flex-1 overflow-y-auto">
@@ -1375,12 +1391,12 @@ export default function EditFixturePage({ user }) {
           <Card className="p-4 sm:p-5">
             <SectionHeader
               icon={CalendarClock}
-              title={t('อัปเดต Exp (PM Due)', 'Update exp (PM due)')}
+              title={t('อัปเดตวันหมดอายุ', 'Update expiry date')}
               desc={t('วันที่เดียวจะถูกใช้กับทุก Fixture ที่ติ๊กเลือก', 'One date will be applied to every checked fixture')}
               className="mb-4"
             />
             <div className="flex flex-wrap items-end gap-3">
-              <FormField label={t('Exp (PM Due)', 'Exp (PM Due)')} className="w-52">
+              <FormField label={t('Expiry date', 'Expiry date')} className="w-52">
                 <Input type="date" value={bulkExp} onChange={(event) => setBulkExp(event.target.value)} />
               </FormField>
               <Button
@@ -1388,7 +1404,7 @@ export default function EditFixturePage({ user }) {
                 onClick={saveDueDates}
                 disabled={bulkBusy || !dueSelected.size || !bulkExp || bulk4MBlocks.length > 0}
               >
-                {bulkBusy ? t('กำลังบันทึก…', 'Saving…') : t('อัปเดต Exp ที่เลือก', 'Update selected exp')}
+                {bulkBusy ? t('กำลังบันทึก…', 'Saving…') : t('อัปเดตวันหมดอายุที่เลือก', 'Update selected expiry dates')}
               </Button>
               <div className="ml-auto flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-500">
                 <span>

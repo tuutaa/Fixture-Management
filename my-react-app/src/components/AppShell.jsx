@@ -8,7 +8,7 @@ import LanguageSwitcher from './LanguageSwitcher'
 
 export default function AppShell({ user, page, onNavigate, onLogout, children }) {
   const [mobileOpen, setMobileOpen] = useState(false)
-  const { t } = useLanguage()
+  const { t, ui } = useLanguage()
   const isAdmin = isAdminUser(user)
   const active = ALL_NAV_ITEMS.find((item) => item.key === page) || ALL_NAV_ITEMS[0]
   const visibleGroups = NAV_GROUPS
@@ -55,7 +55,7 @@ export default function AppShell({ user, page, onNavigate, onLogout, children })
             </p>
             {IS_MOCK ? (
               <span className="mt-1 inline-flex items-center rounded-md bg-amber-100 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-amber-700">
-                Mock data
+                {ui('mockData')}
               </span>
             ) : null}
           </div>

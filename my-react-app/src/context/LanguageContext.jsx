@@ -1,5 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { getUiText } from '../lib/translations'
 
 const LanguageContext = createContext()
 
@@ -33,7 +34,10 @@ export const LanguageProvider = ({ children }) => {
 
   const t = useCallback((th, en) => (lang === 'TH' ? th : (en ?? th)), [lang])
 
-  const value = useMemo(() => ({ lang, setLang, t }), [lang, setLang, t])
+  // Key-based copy for common labels that were previously hardcoded English.
+  const ui = useCallback((key) => getUiText(key, lang), [lang])
+
+  const value = useMemo(() => ({ lang, setLang, t, ui }), [lang, setLang, t, ui])
 
   return (
     <LanguageContext.Provider value={value}>

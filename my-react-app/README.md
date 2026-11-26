@@ -10,9 +10,9 @@ Register → Input Fixture Information → If Exist / Not Exist
 Request → Change Model | Breakdown
 Change Model → (By line: queue slot | By machine: select machine) → Model A → Model B → Compare A->B → Summary Issue/Return
   → Fixture Room Progress → ME/TE Confirm Received → Record History → Done
-  → ME/TE Return Fixture → Fixture Confirm Returned → Record History
+  → ME/TE Return Fixture → Fixture Confirm Returned → (Maintenance? → PM & Maintenance Verify → Requester Verify → Order Done) → Record History
 Breakdown → Verify → PM & Maintenance | Issue Spare | Record Breakdown
-PM → Pre-Alert → Overdue 3 day remind (Orange) | Current reach 80% remind (Orange)
+PM → Pre-Alert → Overdue 3 day remind (Orange)
   → Plan PM → PM On Due → PM Over Due → 4M (Over 7 Day → Management Approve +XX Days)
   → PM & Maintenance → Verify + Record
      OK → Reset Due → Auto Print Sticker → Record History → Done
@@ -23,10 +23,21 @@ PM → Pre-Alert → Overdue 3 day remind (Orange) | Current reach 80% remind (O
 - **Orders** — Fixture Room รับคำขอ (Accept) → เตรียม/จ่ายของ (Issue) → ME/TE ยืนยันรับ (Verify → Done)
   - Change Model เลือกได้ 2 รูปแบบ: `Change by line` (ใช้คิว 1 ชม. ต่อ Line) หรือ `Change by machine` (ระบุเครื่องจักร ไม่ใช้คิว) และ Compare Fixture List ของ Model A→B อัตโนมัติ แยกรายการ Issue / Return / Keep
 - **Register** — ลงทะเบียน Fixture ใหม่ ตรวจ `If Exist / Not Exist` ตาม Serial Number
-- **Return** — ME/TE คืน Fixture → Fixture Room ยืนยันรับคืนเข้า `In Stock` หรือ `Maintenance`
-- **PM** — หน้าแยกแท็บ `งาน PM` (4M → Approve → Start PM · ปฏิทิน · รายการตาม Line/Model) และ `ตรวจรับงานซ่อม` (เลือก Fixture → Done / NG)
-  Pre-Alert · Overdue 3 day remind · 80% Usage remind · PM On Due · PM Over Due + `Plan PM` + `4M Approve (+XX days)`
-- **Maintenance** — Verify + Record: `OK` → Reset Due + Auto Print Sticker, `NG` → Need Scrape / Need PR / New One Replacement
+- **Return** — ME/TE คืน Fixture → Fixture Room ยืนยันรับคืน → ถามว่าต้องการซ่อมหรือไม่
+  - `ไม่ต้อง` → เข้า `In Stock` และปิดคำขอทันที (เหมือนเดิม)
+  - `ต้องการ — Maintenance` → Fixture ที่คืนทั้งหมด (Change Model / Breakdown) เปลี่ยนเป็น `Maintenance`, คำขอยังอยู่ใน `Verify` และแสดง `รอ Maintenance` จนกว่า PM & Maintenance จะ Verify เสร็จ
+  - หลัง `Maintenance เสร็จ (Done)` การ์ดจะเปลี่ยนเป็น `รอผู้ขอ Verify` — ผู้ขอต้องกด Verify อีกครั้งเพื่อปิดคำขอ บันทึก History จะเกิดตอนนี้เท่านั้น
+- **PM** — หน้าแยกแท็บ `PM` (4M → Approve → Start PM · ปฏิทิน · `Do this now`) และ `Maintenance` (เลือก Fixture → `Maintenance เสร็จ (Done)` / `NG`)
+  แผง `Do this now` ปรับความสูงให้เท่ากับปฏิทิน แล้วเลื่อนภายในแผงได้
+  Pre-Alert · Overdue 3 day remind · PM On Due · PM Over Due + `Plan PM` + `4M Approve (+XX days)`
+  ปุ่ม `View list` ใน `Do this now` หรือกลุ่มที่ติด 4M จะเปิดรายการทั้งหมดเป็น modal กระชับ (กรอง Line/Model/SN ได้ และยังใส่ Doc NO./เริ่ม PM จากในรายการได้) — ไม่มีแผงรายการยาวด้านล่างอีกต่อไป
+  วันที่เริ่มนับ PM คือ `usage.inUseAt` (จุดเปลี่ยน In Stock → In Use) + 90 วัน (`pmDueDate`) **ไม่ใช่** `usage.exp` ที่ใช้สำหรับวันหมดอายุของ Fixture
+  4M ใช้ **Doc NO.** (กรอกในหน้า PM แทนการแนบไฟล์) และเก็บใน `pmForms` หลังของเก่าที่เป็น URL ยังเปิดได้อยู่
+- **Dashboard** — KPI `PM เกินกำหนด`, `Expired in 3 day`, `Expired` แยกจากกัน สรุปทั้งหมดอยู่ในหน้าเดียวไม่ต้องเลื่อน
+- **Fixture List** — คลิกแถว Line/Model เพื่อขยายแถวแทรกด้านล่างแถวนั้นทันที แสดง Fixture Base ของแต่ละ Position (พร้อมจำนวนตาม Excel / จำนวนจริง)
+- **Maintenance** — Verify + Record: `OK` → Reset Due + Auto Print Sticker + เปลี่ยนการ์ด Order เป็น `รอผู้ขอ Verify` (ยังไม่ปิดคำขอ), `NG` → Need Scrape / Need PR / New One Replacement
+- **ภาษา** — ระบบ switching ภาษาแบบรวมศูนย์ (`LanguageContext` + `src/lib/translations.js`) ค่าเริ่มต้นเป็นภาษาไทย แปลข้อความ UI เป็นไทยเกือบทั้งหมด และคงคำเฉพาะ เช่น `Fixture`, `PM`, `NG`, `SN`, `Doc NO.`, `FAN2 · ระบบ Fixture MM` ไว้
+  ปุ่มเลือกภาษาอยู่มุมขวาล่าง (`ไทย` / `อังกฤษ`) และจำค่าลง `localStorage.app_lang`
 - **History** — ทุก action บันทึกลง collection `history` อัตโนมัติ
 - **Users** — อนุมัติผู้ใช้ใหม่และจัดการสิทธิ์
 - **Sticker printing** — พิมพ์ QR 36 × 11 mm (Register และหลัง PM OK อัตโนมัติ)
@@ -38,7 +49,7 @@ PM → Pre-Alert → Overdue 3 day remind (Orange) | Current reach 80% remind (O
   - `fixtureInfo` — `{ step, process, position, fixtureDetail{} }`
   - `fixtureDetail` — `{ sn, status, type, storage, usage{}, registered{}, fixtureBase }`
   - `usage` — `{ current, max, exp, storage, currentModel, changeModel }`
-- `request` — `{ line, model, modelTo, type, status, desc, requestInfo, acceptInfo, issueInfo, verifyInfo }`
+- `request` — `{ line, model, modelTo, type, status, desc, requestInfo, acceptInfo, issueInfo, verifyInfo, returnApprovals, maintenancePending, maintenanceSns, maintenanceCompletedAt, requesterFinalApproval }`
 - `history` — record ทุก action (`Register`, `Accept`, `Issue`, `Return`, `Verify`, `Plan PM`, `PM OK`, `PM NG`, `4M Approve`, …)
 
 สถานะ Request: `Waiting → Accepted → Issued → Done`
@@ -84,6 +95,21 @@ npm run dev:mock
 
 เปิด http://localhost:8000 — ข้อมูลตัวอย่างถูกสร้างในหน่วยความจำฝั่ง frontend
 (`src/lib/mockData.js` + `src/lib/mockApi.js`) และจะรีเซ็ตทุกครั้งที่ refresh
+
+ข้อมูล mock ใช้ export จริง 2 ไฟล์ที่แนบมา (ไม่มีคำขอ/ออเดอร์ — เริ่มหน้า Orders ด้วยรายการว่าง):
+
+| ไฟล์ใน repo | แหล่งที่มา | ใช้ทำอะไร |
+| --- | --- | --- |
+| `src/lib/data/fixtures.json` | `FixtureManagement.fixtures.json` | Fixture ทั้งหมด (5,791 ตัว) |
+| `src/lib/data/fixtureMaster.json` | `FixtureDataBase (2) 16 - Copy.xlsx` | **Fixture List** (Line/Model/Position/FixtureBase) + Step / Process master |
+
+> สร้าง `fixtureMaster.json` ใหม่จาก XLSX ได้ด้วย `node scripts/build-fixture-master.cjs`
+>
+> Import Fixture List เป็นการอัปเดต master (Line/Model/Position/FixtureBase/count) และปรับ
+> step/process/position ของ Fixture ที่ลงทะเบียนแล้วเท่านั้น **ไม่สร้าง Serial ใหม่**
+>
+> ไฟล์ export ไม่มีข้อมูลผู้ใช้ จึงยังคงใช้บัญชี demo สำหรับ login (`admin/admin`,
+> `10001/1234`) และสร้างผู้ใช้เพิ่มจาก `Registed.UserID` ใน fixture export
 
 | Emp ID | Password | Role |
 | --- | --- | --- |
