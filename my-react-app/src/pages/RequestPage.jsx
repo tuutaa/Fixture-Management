@@ -3,7 +3,6 @@ import {
   ArrowRight,
   CalendarClock,
   CheckCircle2,
-  Cog,
   FilePlus2,
   Plus,
   RefreshCw,
@@ -129,16 +128,15 @@ export default function RequestPage({ user }) {
         const value = String(machine?.machineCode || machine?.machine || machine?.name || '').trim()
         if (!value || seen.has(value)) return null
         seen.add(value)
-        const name = String(machine?.name || machine?.thaiName || '').trim()
+        const englishName = String(machine?.name || '').trim()
+        const thaiName = String(machine?.thaiName || '').trim()
         const line = String(machine?.line || machine?.locationName || '').trim()
-        const model = String(machine?.model || '').trim()
         return {
           value,
-          label: name && name !== value ? `${value} · ${name}` : value,
-          secondary: [line, model].filter(Boolean).join(' · '),
+          label: [line, englishName, thaiName].filter(Boolean).join(' · '),
+          secondary: value,
           group: line || undefined,
           line,
-          model,
         }
       })
       .filter(Boolean)
@@ -172,7 +170,7 @@ export default function RequestPage({ user }) {
 
   const submit = async (event) => {
     event.preventDefault()
-    if (!form.line) {
+    if (isModelSwap && !form.line) {
       toast.error(t('กรุณาระบุ Line', 'Please specify a line'))
       return
     }
@@ -352,74 +350,64 @@ export default function RequestPage({ user }) {
                     <option value="machine">{t('เปลี่ยนตามเครื่องจักร (Change by machine)', 'Change by machine')}</option>
                   </NativeSelect>
                 </FormField>
-                <p className={`flex items-start gap-2 rounded-xl px-3 py-2.5 text-[11px] font-semibold leading-relaxed ${
-                  isChangeByMachine
-                    ? 'bg-white text-emerald-700 ring-1 ring-emerald-200'
-                    : 'bg-white text-blue-700 ring-1 ring-blue-200'
-                }`}>
-                  {isChangeByMachine ? <Cog className="mt-0.5 h-4 w-4 shrink-0" /> : <CalendarClock className="mt-0.5 h-4 w-4 shrink-0" />}
-                  <span>
-                    {isChangeByMachine
-                      ? t('ไม่ใช้คิว Change Model — ระบุเครื่องจักรในข้อมูลคำขอด้านล่าง', 'No change-model queue — pick the machine in Request information below')
-                      : t('ใช้รูปแบบเดิม — ต้องเลือกคิวเวลาเปลี่ยนรุ่น 1 ชม.', 'Existing flow — reserve a 1-hour change-model slot')}
-                  </span>
-                </p>
+                <div className="hidden" />
               </div>
             </section>
           ) : null}
 
-          <section className="border-t border-slate-100 pt-5">
-            <SectionHeader title={t('ข้อมูลคำขอ', 'Request information')} className="mb-3" />
-            <div className="grid gap-4 sm:grid-cols-2">
-              <FormField label={t('Line', 'Line')} required>
-                <SearchableSelect
-                  value={form.line}
-                  onChange={(value) => setForm((c) => ({
-                    ...c,
-                    line: value,
-                    machine: '',
-                    currentModel: '',
-                    changeModel: '',
-                  }))}
-                  options={lineOptions}
-                  placeholder={t('เลือก Line', 'Select line')}
-                  clearable
-                />
-              </FormField>
-              {isChangeByMachine ? (
-                <FormField
-                  label={t('เครื่องจักร (Machine)', 'Machine')}
-                  required
-                  className="sm:col-span-2"
-                  hint={
-                    machineOptions.length
-                      ? t('ค้นหาเครื่องจักรจาก FAN2 และเลือก 1 เครื่อง', 'Search FAN2 machines and select one')
-                      : t('ไม่พบข้อมูลเครื่องจักรจาก FAN2', 'No machine data loaded from FAN2')
-                  }
-                >
+          {isModelSwap ? (
+            <section className="border-t border-slate-100 pt-5">
+              <SectionHeader title={t('ข้อมูลคำขอ', 'Request information')} className="mb-3" />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <FormField label={t('Line', 'Line')} required>
                   <SearchableSelect
-                    value={form.machine}
-                    onChange={(value) => setForm((c) => ({ ...c, machine: value }))}
-                    options={machineOptionsForLine}
-                    placeholder={t('ค้นหาและเลือกเครื่องจักร', 'Search and select a machine')}
-                    searchPlaceholder={t('พิมพ์รหัสหรือชื่อเครื่องจักร…', 'Type a machine code or name…')}
-                    emptyText={t('ไม่พบเครื่องจักรที่ตรงกัน', 'No matching machine')}
+                    value={form.line}
+                    onChange={(value) => setForm((c) => ({
+                      ...c,
+                      line: value,
+                      machine: '',
+                      currentModel: '',
+                      changeModel: '',
+                    }))}
+                    options={lineOptions}
+                    placeholder={t('เลือก Line', 'Select line')}
                     clearable
                   />
                 </FormField>
-              ) : null}
-              <FormField label={t('ประเภทกระบวนการ', 'Process type')}>
-                <NativeSelect
-                  value={form.requestType}
-                  onChange={(e) => setForm((c) => ({ ...c, requestType: e.target.value }))}
-                >
-                  {PROCESS_TYPES.map((p) => (
-                    <option key={p.value} value={p.value}>{t(p.label, p.label)}</option>
-                  ))}
-                </NativeSelect>
-              </FormField>
-            </div>
-          </section>
+                {isChangeByMachine ? (
+                  <FormField
+                    label={t('เครื่องจักร (Machine)', 'Machine')}
+                    required
+                    hint={
+                      machineOptions.length
+                        ? t('ค้นหาเครื่องจักรจาก FAN2 และเลือก 1 เครื่อง', 'Search FAN2 machines and select one')
+                        : t('ไม่พบข้อมูลเครื่องจักรจาก FAN2', 'No machine data loaded from FAN2')
+                    }
+                  >
+                    <SearchableSelect
+                      value={form.machine}
+                      onChange={(value) => setForm((c) => ({ ...c, machine: value }))}
+                      options={machineOptionsForLine}
+                      placeholder={t('ค้นหาและเลือกเครื่องจักร', 'Search and select a machine')}
+                      searchPlaceholder={t('พิมพ์รหัสหรือชื่อเครื่องจักร…', 'Type a machine code or name…')}
+                      emptyText={t('ไม่พบเครื่องจักรที่ตรงกัน', 'No matching machine')}
+                      clearable
+                    />
+                  </FormField>
+                ) : null}
+                <FormField label={t('ประเภทกระบวนการ', 'Process type')}>
+                  <NativeSelect
+                    value={form.requestType}
+                    onChange={(e) => setForm((c) => ({ ...c, requestType: e.target.value }))}
+                  >
+                    {PROCESS_TYPES.map((p) => (
+                      <option key={p.value} value={p.value}>{t(p.label, p.label)}</option>
+                    ))}
+                  </NativeSelect>
+                </FormField>
+              </div>
+            </section>
+          ) : null}
 
           {isModelSwap ? (
             <section className="border-t border-slate-100 pt-5">

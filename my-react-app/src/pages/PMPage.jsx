@@ -866,8 +866,8 @@ export default function PMPage({ user }) {
             />
           </section>
 
-      {/* ---------- Compact calendar, always visible ---------- */}
-      <section id="pm-calendar" className="scroll-mt-4">
+      <div className="grid gap-4 lg:grid-cols-[40%_60%]">
+        <section id="pm-calendar" className="order-2 scroll-mt-4">
         <Card className="p-3 sm:p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -978,7 +978,7 @@ export default function PMPage({ user }) {
       </section>
 
       {/* ---------- Today's work ---------- */}
-      <section id="pm-actions" className="scroll-mt-4">
+      <section id="pm-actions" className="order-1 scroll-mt-4">
         <Card className="overflow-hidden">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5">
             <div className="flex min-w-0 items-center gap-3">
@@ -1245,6 +1245,7 @@ export default function PMPage({ user }) {
           )}
         </Card>
       </section>
+      </div>
 
       <div className="flex justify-center">
         <button

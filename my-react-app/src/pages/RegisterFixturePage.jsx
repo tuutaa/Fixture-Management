@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ClipboardList, ScanLine, Trash2, X } from 'lucide-react'
+import { ClipboardList, Download, ScanLine, Trash2, Upload, X } from 'lucide-react'
 import api from '../lib/api'
 import {
   Card,
@@ -125,7 +125,10 @@ export default function RegisterFixturePage({ user }) {
   const sm = useServerMessage()
   const toast = useToast()
   const snRef = useRef(null)
+  const importInputRef = useRef(null)
   const [form, setForm] = useState(EMPTY_FORM)
+  const [importing, setImporting] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [queue, setQueue] = useState([])
   const [locations, setLocations] = useState([])
   const [models, setModels] = useState([])
@@ -239,6 +242,146 @@ export default function RegisterFixturePage({ user }) {
     setQueue((current) => current.filter((item) => item.id !== id))
   }
 
+  const normalizeHeader = (value) => String(value || '').trim().toLowerCase()
+
+  const handleImportFile = async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    setImporting(true)
+    try {
+      const XLSX = await import('xlsx')
+      const buffer = await file.arrayBuffer()
+      const workbook = XLSX.read(buffer, { type: 'array' })
+      const sheetName = workbook.SheetNames[0]
+      const sheet = workbook.Sheets[sheetName]
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false })
+      if (!rows.length) throw new Error(t('ไม่พบข้อมูลในไฟล์', 'No data found in file'))
+
+      // Find header row
+      let headerIndex = 0
+      for (let i = 0; i < Math.min(rows.length, 5); i++) {
+        const row = rows[i] || []
+        if (row.some((cell) => /sn|serial/i.test(String(cell)))) {
+          headerIndex = i
+          break
+        }
+      }
+      const headers = (rows[headerIndex] || []).map(normalizeHeader)
+      const colIndex = (names) => {
+        for (const name of names) {
+          const idx = headers.findIndex((h) => h.includes(name))
+          if (idx >= 0) return idx
+        }
+        return -1
+      }
+      const snIdx = colIndex(['sn', 'serial'])
+      const lineIdx = colIndex(['line'])
+      const modelIdx = colIndex(['model'])
+      const stepIdx = colIndex(['step'])
+      const processIdx = colIndex(['process'])
+      const positionIdx = colIndex(['position'])
+      const typeIdx = colIndex(['type', 'process type'])
+      const storageIdx = colIndex(['storage', 'ตำแหน่งเก็บ'])
+      const revisionIdx = colIndex(['revision', 'rev'])
+      const statusIdx = colIndex(['status', 'สถานะ'])
+      const currentIdx = colIndex(['current', 'usage current'])
+      const maxIdx = colIndex(['max', 'usage max'])
+      const expIdx = colIndex(['exp', 'due'])
+      const descIdx = colIndex(['desc', 'description', 'คำอธิบาย'])
+
+      if (snIdx < 0) throw new Error(t('ไม่พบคอลัมน์ SN ในไฟล์', 'SN column not found in file'))
+
+      const items = []
+      for (let i = headerIndex + 1; i < rows.length; i++) {
+        const row = rows[i] || []
+        const sn = String(row[snIdx] || '').trim()
+        if (!sn) continue
+        items.push({
+          sn,
+          line: lineIdx >= 0 ? String(row[lineIdx] || '').trim() : '',
+          model: modelIdx >= 0 ? String(row[modelIdx] || '').trim() : '',
+          step: stepIdx >= 0 ? String(row[stepIdx] || '').trim() : '',
+          process: processIdx >= 0 ? String(row[processIdx] || '').trim() : '',
+          position: positionIdx >= 0 ? String(row[positionIdx] || '').trim() : '',
+          type: typeIdx >= 0 ? String(row[typeIdx] || '').trim() : '',
+          storage: storageIdx >= 0 ? String(row[storageIdx] || '').trim() : '',
+          revision: revisionIdx >= 0 ? String(row[revisionIdx] || '').trim() : '',
+          status: statusIdx >= 0 ? String(row[statusIdx] || '').trim() || 'In Stock' : 'In Stock',
+          current: currentIdx >= 0 ? Number(row[currentIdx]) || 0 : 0,
+          max: maxIdx >= 0 ? Number(row[maxIdx]) || 0 : 0,
+          exp: expIdx >= 0 ? String(row[expIdx] || '').trim() : '',
+          description: descIdx >= 0 ? String(row[descIdx] || '').trim() : '',
+        })
+      }
+      if (!items.length) throw new Error(t('ไม่พบข้อมูล Fixture ในไฟล์', 'No fixture data found in file'))
+
+      // Check duplicates against existing
+      const existingSns = new Set(queue.map((q) => normSn(q.sn)))
+      let added = 0
+      for (const item of items) {
+        if (existingSns.has(normSn(item.sn))) continue
+        existingSns.add(normSn(item.sn))
+        // Check if fixture already exists in DB
+        let existing = null
+        try {
+          const data = await api.fixture(item.sn)
+          existing = data?.fixture || null
+        } catch (err) {
+          if (err?.status !== 404) {
+            // ignore other errors, treat as new
+          }
+        }
+        setQueue((current) => [...current, { id: `${normSn(item.sn)}-${Date.now()}-${added}`, ...item, fixtureBase: item.sn.includes('-') ? item.sn.split('-')[0] : item.sn, existing }])
+        added++
+      }
+      toast.success(t(`นำเข้า ${added} รายการจาก Excel`, `Imported ${added} item(s) from Excel`))
+    } catch (err) {
+      toast.error(err?.message ? sm(err.message) : t('นำเข้าไม่สำเร็จ', 'Import failed'))
+    } finally {
+      setImporting(false)
+      if (importInputRef.current) importInputRef.current.value = ''
+    }
+  }
+
+  const handleExport = async () => {
+    setExporting(true)
+    try {
+      const data = await api.fixtures()
+      const rows = Array.isArray(data) ? data : []
+      const XLSX = await import('xlsx')
+      const header = ['SN', 'Base', 'Line', 'Model', 'Step', 'Process', 'Position', 'Process Type', 'Storage', 'Revision', 'Status', 'Exp', 'Current', 'Max', 'Description']
+      const sheetRows = [header]
+      for (const f of rows) {
+        sheetRows.push([
+          f.sn || '',
+          f.fixtureBase || (f.sn ? String(f.sn).split('-')[0] : ''),
+          f.line || '',
+          f.model || '',
+          f.step || '',
+          f.process || '',
+          f.position || '',
+          f.type || '',
+          f.usage?.storage || f.storage || '',
+          f.revision || '',
+          f.status || '',
+          f.usage?.exp || f.exp || '',
+          f.usage?.current ?? f.current ?? 0,
+          f.usage?.max ?? f.max ?? 0,
+          f.description || '',
+        ])
+      }
+      const ws = XLSX.utils.aoa_to_sheet(sheetRows)
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'Fixtures')
+      XLSX.writeFile(wb, `fixtures-export-${new Date().toISOString().slice(0, 10)}.xlsx`)
+      toast.success(t(`ส่งออก ${rows.length} รายการ`, `Exported ${rows.length} item(s)`))
+    } catch (err) {
+      toast.error(err?.message ? sm(err.message) : t('ส่งออกไม่สำเร็จ', 'Export failed'))
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const duplicateCount = queue.filter((item) => item.existing).length
 
   const registerAll = async () => {
@@ -262,7 +405,11 @@ export default function RegisterFixturePage({ user }) {
     for (const item of queue) {
       try {
         const { id: _id, existing: _existing, ...payload } = item
-        await api.createFixture({ ...payload, user })
+        if (item.existing) {
+          await api.updateFixture(item.sn, { ...payload, user })
+        } else {
+          await api.createFixture({ ...payload, user })
+        }
         succeeded.push(item.id)
       } catch (err) {
         failed.push({ item, message: err.message })
@@ -287,7 +434,28 @@ export default function RegisterFixturePage({ user }) {
 
   return (
     <div className="space-y-4">
-      <PageHeader eyebrow={t('Fixture', 'Fixture')} icon={ScanLine} title={t('ลงทะเบียน Fixture', 'Register fixture')} />
+      <PageHeader
+        eyebrow={t('Fixture', 'Fixture')}
+        icon={ScanLine}
+        title={t('ลงทะเบียน Fixture', 'Register fixture')}
+        actions={
+          <>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              className="hidden"
+              onChange={handleImportFile}
+            />
+            <Button variant="secondary" icon={Upload} disabled={importing} onClick={() => importInputRef.current?.click()}>
+              {importing ? t('กำลังนำเข้า…', 'Importing…') : t('นำเข้า Excel', 'Import Excel')}
+            </Button>
+            <Button variant="secondary" icon={Download} disabled={exporting} onClick={handleExport}>
+              {exporting ? t('กำลังส่งออก…', 'Exporting…') : t('ส่งออก Excel', 'Export Excel')}
+            </Button>
+          </>
+        }
+      />
 
       {error ? <ErrorState message={error} onRetry={loadOptions} /> : null}
 

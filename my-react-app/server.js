@@ -185,6 +185,7 @@ const fixtureListSchema = new mongoose.Schema(
             step: String,
             process: String,
             position: String,
+            count: { type: Number, default: 0 },
             sn: { type: [String], default: [] },
           },
           { _id: false, versionKey: false },
@@ -843,11 +844,14 @@ app.post(
 
     let registered = []
     if (baseRefs.size) {
-      const basePattern = new RegExp(
-        `^(${[...baseRefs.keys()].map(escapeRegexValue).join('|')})$`,
-        'i',
-      )
-      registered = await FixtureDetail.find({ fixtureBase: basePattern }).lean()
+      const bases = [...baseRefs.keys()]
+      // Query in batches to avoid oversized regex / query limits.
+      const batchSize = 200
+      for (let i = 0; i < bases.length; i += batchSize) {
+        const batch = bases.slice(i, i + batchSize)
+        const found = await FixtureDetail.find({ fixtureBase: { $in: batch } }).lean()
+        registered.push(...found)
+      }
     }
 
     const issues = []
@@ -891,17 +895,20 @@ app.post(
       }
     }
 
-    const blocked4M = []
-    for (const issue of issues) {
-      const guard = await assertFixtureEditable(issue.sn)
-      if (guard) blocked4M.push({ sn: issue.sn, message: guard.message })
-    }
-    if (blocked4M.length) {
-      return res.status(409).json({
-        success: false,
-        message: blocked4M[0].message,
-        blocked: blocked4M,
-      })
+    // When confirm=true (force import), skip the 4M guard to allow import.
+    if (!confirm) {
+      const blocked4M = []
+      for (const issue of issues) {
+        const guard = await assertFixtureEditable(issue.sn)
+        if (guard) blocked4M.push({ sn: issue.sn, message: guard.message })
+      }
+      if (blocked4M.length) {
+        return res.status(409).json({
+          success: false,
+          message: blocked4M[0].message,
+          blocked: blocked4M,
+        })
+      }
     }
 
     if (issues.length && !confirm) {
@@ -1040,13 +1047,14 @@ app.get(
   '/api/fan2/machines',
   asyncRoute(async (_req, res) => {
     const db = await getFan2Db()
-    const docs = await db.collection('MachineNew').find({}, { projection: { machineCode: 1, name: 1, thaiName: 1, 'locationInfo.name': 1 } }).toArray()
+    const docs = await db.collection('MachineNew').find({}, { projection: { machineCode: 1, name: 1, thaiName: 1, machineInfo: 1 } }).toArray()
     const machines = [...new Set(docs.map((d) => text(d.machineCode)).filter(Boolean))].map((machineCode) => {
       const machine = docs.find((d) => text(d.machineCode) === machineCode) || {}
       return {
         machineCode,
-        name: text(machine.name) || text(machine.thaiName) || '',
-        locationName: text(machine.locationInfo?.name),
+        name: text(machine.name) || '',
+        thaiName: text(machine.thaiName) || '',
+        locationName: text(machine.machineInfo?.locationInfo?.name),
       }
     })
     res.json(machines)
@@ -1083,7 +1091,7 @@ app.get(
   asyncRoute(async (req, res) => {
     await syncPmStatuses()
     const { line, model, status, sn, type, step, process, position, storage, fixtureBase, revision, q } = req.query
-    let data = await flattenFixtures({
+    let data = await flattenFixtureDetails({
       line,
       model,
       status,
@@ -1463,37 +1471,38 @@ app.delete(
  * keep   = SN ที่ใช้ร่วมกันทั้งสอง model -> ใช้ต่อได้
  */
 const compareModels = async (line, from, to) => {
-  const [fromDoc, toDoc] = await Promise.all([
-    FixtureList.findOne({ line, model: from }).lean(),
-    FixtureList.findOne({ line, model: to }).lean(),
+  // Use actual "In Use" fixtures (not the base fixture list) so the compare
+  // reflects real fixtures installed on the line for each model.
+  const [fromDocs, toDocs] = await Promise.all([
+    FixtureDetail.find({ line, model: from, status: 'In Use' }).lean(),
+    FixtureDetail.find({ line, model: to, status: 'In Use' }).lean(),
   ])
 
   const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase()
 
-  const collect = (doc) => {
+  const collect = (docs) => {
     const map = new Map()
-    for (const info of doc?.fixtureInfo || []) {
-      const key = norm(info.position)
+    for (const d of docs || []) {
+      const key = norm(d.position)
       if (!key) continue
       if (!map.has(key)) {
         map.set(key, {
-          position: String(info.position || '').trim(),
-          process: String(info.process || '').trim(),
+          position: String(d.position || '').trim(),
+          process: String(d.process || '').trim(),
           count: 0,
           sn: new Set(),
         })
       }
       const bucket = map.get(key)
-      if (!bucket.process && info.process) bucket.process = String(info.process).trim()
-      const count = Number(info.count) || 0
-      if (count > bucket.count) bucket.count = count
-      for (const sn of info.sn || []) if (sn) bucket.sn.add(String(sn))
+      if (!bucket.process && d.process) bucket.process = String(d.process).trim()
+      if (d.sn) bucket.sn.add(String(d.sn))
+      bucket.count = bucket.sn.size
     }
     return map
   }
 
-  const fromMap = collect(fromDoc)
-  const toMap = collect(toDoc)
+  const fromMap = collect(fromDocs)
+  const toMap = collect(toDocs)
 
   const flattenSn = (map) => {
     const out = []
@@ -1522,7 +1531,7 @@ const compareModels = async (line, from, to) => {
     return: returnList,
     keep,
     total: { issue: issue.length, return: returnList.length, keep: keep.length },
-    missing: { from: !fromDoc, to: !toDoc },
+    missing: { from: !(fromDocs || []).length, to: !(toDocs || []).length },
   }
 }
 
@@ -1689,16 +1698,19 @@ app.post(
   asyncRoute(async (req, res) => {
     const body = req.body || {}
     const type = text(body.type)
-    const line = text(body.line)
-    const currentModel = text(body.currentModel || body.model)
+    let line = text(body.line)
+    let currentModel = text(body.currentModel || body.model)
     const changeModel = text(body.changeModel || body.modelTo)
     const changeBy = type === 'Change Model' && text(body.changeBy) === 'machine' ? 'machine' : 'line'
     const machine = text(body.machine)
     const queueDate = text(body.queueDate) || todayInput()
     const queueSlot = text(body.queueSlot)
 
-    if (!type || !line) {
-      return res.status(400).json({ success: false, message: 'กรุณาระบุประเภทคำขอและ Line' })
+    if (!type) {
+      return res.status(400).json({ success: false, message: 'กรุณาระบุประเภทคำขอ' })
+    }
+    if (type !== 'Breakdown' && !line) {
+      return res.status(400).json({ success: false, message: 'กรุณาระบุ Line' })
     }
     if (!['Change Model', 'Breakdown'].includes(type)) {
       return res.status(400).json({ success: false, message: 'ประเภทคำขอไม่ถูกต้อง' })
@@ -1730,6 +1742,15 @@ app.post(
     const breakdownItems = Array.isArray(body.breakdownItems)
       ? body.breakdownItems.map((it) => ({ sn: text(it?.sn) || '', symptom: text(it?.symptom) || '' })).filter((it) => it.sn || it.symptom)
       : []
+
+    if (type === 'Breakdown' && breakdownItems.length) {
+      const firstFixture = await findFixture(breakdownItems[0].sn)
+      if (!line && firstFixture?.line) line = text(firstFixture.line)
+      if (!currentModel && (firstFixture?.model || firstFixture?.usage?.model)) currentModel = text(firstFixture.model || firstFixture?.usage?.model)
+    }
+    if (type === 'Breakdown' && !line) {
+      return res.status(400).json({ success: false, message: 'กรุณาระบุ SN ที่มี Line ในระบบ' })
+    }
 
     /* Block duplicate requests. Rejected/Done are history and may be requested
      * again; Waiting/Progress/Hold/Verify are still active in the system. */

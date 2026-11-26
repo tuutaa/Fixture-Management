@@ -56,8 +56,11 @@ export const buildFixtureListItems = (rows) => {
   const parseCount = (value) => {
     const raw = normalizeCell(value)
     if (!raw) return 0
-    const match = raw.match(/^\d+(\.\d+)?$/)
-    return match ? Number(raw) : 0
+    const matches = raw.match(/\d+(\.\d+)?/g)
+    if (matches && matches.length) {
+      return matches.reduce((sum, n) => sum + Number(n), 0)
+    }
+    return 0
   }
   const hasCountRow = dataStart - 2 > headerIdx
   const countRow = hasCountRow ? (rows[dataStart - 2] || []).map(normalizeCell) : []

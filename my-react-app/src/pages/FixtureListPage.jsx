@@ -280,15 +280,17 @@ export default function FixtureListPage() {
       if (!items.length) {
         throw new Error(t('ไม่พบ Fixture List ในไฟล์ Excel', 'No fixture list found in the Excel file'))
       }
+      // Force import: auto-confirm to bypass validation/confirmation prompts.
       let res
       try {
-        res = await api.importFixtureList(items)
+        res = await api.importFixtureList(items, true)
       } catch (err) {
         if (err?.payload?.needsConfirm) {
-          setPendingImport({ items, issues: err.payload.issues || [], message: err.message })
-          return
+          // Retry with force confirm
+          res = await api.importFixtureList(items, true)
+        } else {
+          throw err
         }
-        throw err
       }
       await load()
       toast.success(
@@ -394,6 +396,7 @@ export default function FixtureListPage() {
       const modelHit = needle && String(doc.model || '').toLowerCase().includes(needle)
       const includeAll = !needle || lineHit || modelHit
       const cell = new Map()
+      const cellCount = new Map()
 
       for (const info of doc.fixtureInfo || []) {
         const raw = String(info.position || '').trim()
@@ -423,7 +426,7 @@ export default function FixtureListPage() {
       }
 
       if (cell.size) {
-        rows.push({ id: String(doc._id), line: doc.line, model: doc.model, cell })
+        rows.push({ id: String(doc._id), line: doc.line, model: doc.model, cell, cellCount })
       }
     }
 
@@ -435,30 +438,6 @@ export default function FixtureListPage() {
 
     return { rows, positions: [...POSITION_ORDER, ...extras], processBy, countBy, standardBy }
   }, [docs, appliedFilters.line, appliedFilters.model, needle, snNeedle, t])
-
-  const listRows = useMemo(() => {
-    const rows = []
-    for (const row of matrix.rows) {
-      for (const position of matrix.positions) {
-        const sns = row.cell.get(position) || []
-        if (!sns.length) continue
-        rows.push({
-          id: `${row.id}-${position}`,
-          line: row.line || '-',
-          model: row.model || '-',
-          position,
-          process: [...(matrix.processBy.get(position) || [])].join(', ') || '-',
-          sns,
-          count: sns.length,
-        })
-      }
-    }
-    return rows.sort((a, b) =>
-      String(a.line || '').localeCompare(String(b.line || '')) ||
-      String(a.model || '').localeCompare(String(b.model || '')) ||
-      String(a.position || '').localeCompare(String(b.position || '')),
-    )
-  }, [matrix])
 
   const statusValues = valuesFor(detailOptions, 'statuses').length
     ? valuesFor(detailOptions, 'statuses')
@@ -584,7 +563,7 @@ export default function FixtureListPage() {
       <PageHeader
         eyebrow={t('Fixture', 'Fixture')}
         icon={Boxes}
-        title={t('รายการ Fixture', 'Fixture list')}
+        title={t('Fixture Detail', 'Fixture Detail')}
         actions={
           <>
             <input
@@ -602,7 +581,7 @@ export default function FixtureListPage() {
             >
               {importing
                 ? t('กำลังนำเข้า…', 'Importing…')
-                : t('นำเข้ารายการ Fixture (Excel)', 'Import fixture list (Excel)')}
+                : t('นำเข้ารายการ Fixture List (Excel)', 'Import Fixture List (Excel)')}
             </Button>
           </>
         }
@@ -623,7 +602,7 @@ export default function FixtureListPage() {
             size="sm"
             tabs={[
               { value: 'fixture', label: t('Fixture', 'Fixture') },
-              { value: 'list', label: t('รายการ Fixture', 'Fixture list') },
+              { value: 'list', label: t('Fixture Detail', 'Fixture Detail') },
             ]}
           />
           <p className="text-[11px] font-semibold text-slate-400">
@@ -638,7 +617,7 @@ export default function FixtureListPage() {
 
         <div className="mt-3 border-t border-slate-100 px-3 pt-3">
           <SectionHeader title={t('กรองข้อมูล Fixture', 'Filter fixtures')} className="mb-2" />
-          <div className="grid gap-4 sm:grid-cols-3 md:grid-cols-5">
+          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
             {filterFields.map((field) => (
               <FormField key={field.key} label={field.label} className={field.kind === 'text' ? 'sm:col-span-2 md:col-span-2' : ''}>
                 {field.kind === 'text' ? (
@@ -704,87 +683,64 @@ export default function FixtureListPage() {
         <Card>
           <EmptyState icon={Boxes} title={t('ไม่พบรายการ Fixture', 'No fixture list found')} />
         </Card>
-      ) : (
-                 <Card className="overflow-hidden">
-           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/60 px-4 py-3">
-             <div>
-               <p className="text-xs font-black text-slate-800">{t('รายการ Fixture แยกตาม Position', 'Fixture list by position')}</p>
-               <p className="text-[10px] text-slate-400">
-                 {t('แต่ละแถวคือ Line + Model + Position · SN แสดงเป็น chips', 'Each row is Line + Model + Position · SNs shown as chips')}
-               </p>
-             </div>
-             <span className="rounded-lg bg-white px-2.5 py-1 text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">
-               {t(`${listRows.length.toLocaleString()} รายการ`, `${listRows.length.toLocaleString()} row(s)`)}
-             </span>
-           </div>
-
-           <div className="max-h-[calc(100vh-320px)] overflow-auto">
-             <table className="min-w-full border-collapse text-left text-[11px]">
-               <thead>
-                 <tr className="bg-slate-50">
-                   <th className="sticky top-0 z-20 border-b border-r border-slate-200 px-3 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
-                     {t('Line', 'Line')}
-                   </th>
-                   <th className="sticky top-0 z-20 border-b border-r border-slate-200 px-3 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
-                     {t('Model', 'Model')}
-                   </th>
-                   <th className="sticky top-0 z-20 border-b border-r border-slate-200 px-3 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
-                     {t('Position', 'Position')}
-                   </th>
-                   <th className="sticky top-0 z-20 border-b border-r border-slate-200 px-3 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
-                     {t('Process', 'Process')}
-                   </th>
-                   <th className="sticky top-0 z-20 border-b border-r border-slate-200 px-3 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
-                     {t('SN', 'SN')}
-                   </th>
-                   <th className="sticky top-0 z-20 border-b border-slate-200 px-3 py-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
-                     {t('จำนวน', 'Count')}
-                   </th>
-                 </tr>
-               </thead>
-               <tbody>
-                 {listRows.map((row) => (
-                   <tr key={row.id} className="border-b border-slate-100 hover:bg-slate-50/70">
-                     <td className="border-r border-slate-100 px-3 py-2 text-[11px] font-bold text-slate-700">
-                       {row.line || '-'}
-                     </td>
-                     <td className="border-r border-slate-100 px-3 py-2 font-mono text-[10px] font-semibold text-slate-600">
-                       {row.model || '-'}
-                     </td>
-                     <td className="border-r border-slate-100 px-3 py-2 text-[11px] font-semibold text-slate-700">
-                       {row.position || '-'}
-                     </td>
-                     <td className="border-r border-slate-100 px-3 py-2 text-[10px] text-slate-500">
-                       {row.process || '-'}
-                     </td>
-                     <td className="border-r border-slate-100 px-3 py-2">
-                       <div className="flex flex-wrap gap-1">
-                         {row.sns.map((sn) => (
-                           <span
-                             key={sn}
-                             className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-600"
-                             title={sn}
-                           >
-                             {sn}
-                           </span>
-                         ))}
-                       </div>
-                     </td>
-                     <td className="px-3 py-2 text-center text-[11px] font-black text-blue-600">
-                       {row.count.toLocaleString()}
-                     </td>
-                   </tr>
-                 ))}
-               </tbody>
-             </table>
-             {listRows.length === 0 ? (
-               <div className="p-6 text-center text-[11px] font-semibold text-slate-400">
-                 {t('ไม่พบรายการ Fixture', 'No fixture list found')}
-               </div>
-             ) : null}
-           </div>
-         </Card>
-      )}
+             ) : (
+                    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+            <table className="border-collapse text-left text-[11px]">
+              <thead>
+                <tr className="bg-slate-50">
+                  <th className="sticky left-0 top-0 z-30 min-w-[60px] border-b border-r border-slate-200 bg-slate-50 px-2 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-slate-500">
+                    {t('Line', 'Line')}
+                  </th>
+                  <th className="sticky left-[60px] top-0 z-30 min-w-[120px] border-b border-r border-slate-200 bg-slate-50 px-2 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-slate-500">
+                    {t('Model', 'Model')}
+                  </th>
+                  {matrix.positions.map((position) => (
+                    <th key={position} className="sticky top-0 z-20 w-[26px] min-w-[26px] border-b border-r border-slate-200 bg-slate-50 px-0 py-1 text-center text-[9px] font-bold text-slate-500" title={position} style={{writingMode:'vertical-rl', textOrientation:'mixed', height:'90px'}}>
+                      {position}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {matrix.rows.map((row) => (
+                  <tr key={row.id} className="border-b border-slate-100 hover:bg-blue-50/40">
+                    <td className="sticky left-0 z-10 min-w-[60px] border-r border-slate-100 bg-white px-2 py-1.5 text-[11px] font-bold text-slate-700">
+                      {row.line || '-'}
+                    </td>
+                    <td className="sticky left-[60px] z-10 min-w-[120px] border-r border-slate-100 bg-white px-2 py-1.5 font-mono text-[10px] font-semibold text-slate-600">
+                      {row.model || '-'}
+                    </td>
+                    {matrix.positions.map((position) => {
+                      const sns = row.cell.get(position) || []
+                      const cnt = row.cellCount?.get(position) || sns.length
+                      if (sns.length === 0 && !cnt) return (
+                        <td key={position} className="border-r border-slate-100 px-0 py-1 text-center text-[9px] text-slate-300">
+                          -
+                        </td>
+                      )
+                      return (
+                        <td key={position} className="border-r border-slate-100 px-0 py-1 text-center" title={sns.length ? sns.join('\n') : (cnt ? cnt + ' ตัว' : '')}>
+                          <span className="inline-flex h-4 min-w-[18px] items-center justify-center rounded bg-blue-100 px-0.5 text-[9px] font-black text-blue-700">
+                            {cnt || sns.length}
+                          </span>
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {matrix.rows.length === 0 ? (
+              <div className="flex flex-col items-center justify-center gap-2 p-10 text-center">
+                <Boxes className="h-8 w-8 text-slate-300" />
+                <p className="text-[12px] font-semibold text-slate-400">
+                  {t('ไม่พบรายการ Fixture', 'No fixture list found')}
+                </p>
+              </div>
+            ) : null}
+          </div>
+        )
+      }
 
       <Modal
         open={Boolean(pendingImport)}

@@ -61,8 +61,8 @@ export const NAV_GROUPS = [
       },
       {
         key: 'fixtures',
-        labelTh: 'รายการ Fixture',
-        labelEn: 'Fixture list',
+        labelTh: 'Fixture Detail',
+        labelEn: 'Fixture Detail',
         hintTh: 'รายการ Fixture ทั้งหมด',
         hintEn: 'All fixtures',
         icon: Boxes,
